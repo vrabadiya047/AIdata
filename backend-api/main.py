@@ -59,17 +59,36 @@ async def stream_query(data: QueryRequest):
         raise HTTPException(status_code=404, detail="Workspace index not found.")
 
     # 3. Query LlamaIndex
+    print(f"\n🧠 Sending prompt to AI: {safe_prompt}")
     response = engine.query(safe_prompt)
 
     async def generate_tokens():
         full_response = ""
-        # We stream the response token-by-token for that 'typing' effect
-        for token in response.response_gen:
-            full_response += token
-            yield f"data: {json.dumps({'token': token})}\n\n"
-            await asyncio.sleep(0.02)
         
-        # Save the final redacted response to the database in the background
+        # FALLBACK: If LlamaIndex refuses to stream, grab the static text
+        if not hasattr(response, 'response_gen') or response.response_gen is None:
+            print("⚠️ AI did not stream. Returning full block of text.")
+            static_text = str(response)
+            if not static_text.strip():
+                static_text = "Error: The local LLM returned an empty response. Is Ollama running?"
+            yield f"data: {json.dumps({'token': static_text})}\n\n"
+            save_chat_message(data.project, data.username, data.thread_id, "assistant", static_text)
+            yield "data: [DONE]\n\n"
+            return
+
+        # STREAMING: Print to terminal AND send to UI
+        try:
+            print("🤖 AI Response: ", end="", flush=True)
+            for token in response.response_gen:
+                full_response += token
+                print(token, end="", flush=True) # Watch it type in your terminal!
+                yield f"data: {json.dumps({'token': token})}\n\n"
+                await asyncio.sleep(0.01)
+        except Exception as e:
+            print(f"\n❌ Streaming Interrupted: {e}")
+            yield f"data: {json.dumps({'token': ' [Error generating response]'})}\n\n"
+            
+        print("\n✅ Stream completed.")
         save_chat_message(data.project, data.username, data.thread_id, "assistant", full_response)
         yield "data: [DONE]\n\n"
 

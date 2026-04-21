@@ -10,6 +10,7 @@ import asyncio
 import os
 import io
 import re
+import shutil
 
 from src.engine import get_query_engine
 from src.database import (
@@ -29,7 +30,7 @@ from src.privacy import shield
 from src.logger import log_query
 from src.auth import verify_user, add_user, delete_user, get_all_users, update_user_password, check_and_create_default_admin
 from src.analytics import get_audit_trail
-from src.config import DATA_DIR
+from src.config import DATA_DIR, STORAGE_DIR
 
 _DEFAULT_SECRET = "sovereign-dev-secret-2026-change-in-prod"
 JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", _DEFAULT_SECRET)
@@ -68,6 +69,12 @@ def safe_filename(filename: str) -> str:
     if not name or name.lstrip('.') == '':
         raise HTTPException(status_code=400, detail="Invalid or unsafe filename")
     return name
+
+def invalidate_project_index(username: str, project: str):
+    """Deletes the cached vector index so it is rebuilt on the next query."""
+    storage_path = os.path.join(STORAGE_DIR, username, project)
+    if os.path.exists(storage_path):
+        shutil.rmtree(storage_path)
 
 
 # ─── Auth helpers ────────────────────────────────────────────────────────────
@@ -270,14 +277,14 @@ async def upload_file(
     await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
     save_file_project(clean_name, project, username)
-    update_index_signal()
+    invalidate_project_index(username, project)
 
     return {"status": "uploaded", "file": clean_name}
 
 @app.delete("/api/files/{filename}")
 async def delete_file(filename: str, project: str, user: dict = Depends(get_current_user)):
     handle_delete_file(project, filename, user["username"])
-    update_index_signal()
+    invalidate_project_index(user["username"], project)
     return {"status": "deleted"}
 
 @app.get("/api/files")
@@ -348,16 +355,15 @@ class QueryRequest(BaseModel):
 async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     safe_prompt = shield.redact(data.prompt)
 
-    # Run blocking retrieval in a thread pool — keeps the event loop free
-    engine = await asyncio.to_thread(get_query_engine, project_filter=data.project, username=data.username)
+    # NOTE: LlamaIndex calls asyncio.get_event_loop() internally — cannot run in to_thread
+    engine = get_query_engine(project_filter=data.project, username=data.username)
 
     if not engine:
         raise HTTPException(status_code=404, detail="Workspace index not found.")
 
     save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
 
-    # Run blocking LLM query in a thread pool
-    response = await asyncio.to_thread(engine.query, safe_prompt)
+    response = engine.query(safe_prompt)
 
     async def generate_tokens():
         full_response = ""
@@ -371,18 +377,13 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
             yield "data: [DONE]\n\n"
             return
 
-        # Collect all tokens in thread pool — avoids blocking per-token LLM calls
         try:
-            tokens = await asyncio.to_thread(list, response.response_gen)
+            for token in response.response_gen:
+                full_response += token
+                yield f"data: {json.dumps({'token': token})}\n\n"
+                await asyncio.sleep(0.01)
         except Exception:
             yield f"data: {json.dumps({'token': ' [Error generating response]'})}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
-        for token in tokens:
-            full_response += token
-            yield f"data: {json.dumps({'token': token})}\n\n"
-            await asyncio.sleep(0)
 
         save_chat_message(data.project, data.username, data.thread_id, "assistant", full_response)
         background_tasks.add_task(log_query, safe_prompt, full_response)

@@ -11,6 +11,7 @@ import { useSession } from "@/contexts/SessionContext";
 import { getWorkspaces, getProjectThreads } from "@/app/actions";
 import { Workspace } from "@/types/sovereign";
 import ShareModal from "@/components/ShareModal";
+import ThemeToggle from "@/components/ThemeToggle";
 
 interface SidebarProps {
   activeProject: string;
@@ -47,8 +48,8 @@ function NavItem({
         padding: "8px 10px", borderRadius: "8px", cursor: "pointer",
         border: "none", marginBottom: "1px",
         background: active
-          ? "linear-gradient(90deg, rgba(245,158,11,0.12) 0%, rgba(245,158,11,0.04) 100%)"
-          : hov ? "rgba(255,255,255,0.04)" : "transparent",
+          ? "linear-gradient(90deg, var(--amber-10) 0%, var(--amber-5) 100%)"
+          : hov ? "var(--hover-bg)" : "transparent",
         transition: "background 0.15s ease", textAlign: "left",
       }}
     >
@@ -180,19 +181,19 @@ export default function Sidebar({
 
       {/* Nav */}
       <nav style={{ flex: 1, overflowY: "auto", padding: "0 8px" }}>
-        {/* Threads */}
-        {activeProject && (
+        {/* Sessions */}
+        {activeProject && threads.length > 0 && (
           <>
-            <SectionLabel>Recent Sessions</SectionLabel>
+            <SectionLabel>History</SectionLabel>
             {threads.map((t) => (
               <NavItem key={t} active={activeThread === t} onClick={() => onSelectThread(t)}>
                 {activeThread === t ? (
-                  <div style={{ width: "3px", height: "16px", borderRadius: "2px", background: "var(--amber)", flexShrink: 0, boxShadow: "0 0 6px var(--amber-40)" }} />
+                  <div style={{ width: "3px", height: "14px", borderRadius: "2px", background: "var(--amber)", flexShrink: 0, boxShadow: "0 0 6px var(--amber-40)" }} />
                 ) : (
-                  <Hash size={12} style={{ color: "var(--t3)", flexShrink: 0 }} />
+                  <Hash size={11} style={{ color: "var(--t3)", flexShrink: 0 }} />
                 )}
                 <span style={{
-                  fontSize: "13px",
+                  fontSize: "12.5px",
                   color: activeThread === t ? "var(--t1)" : "var(--t2)",
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   flex: 1, fontWeight: activeThread === t ? 500 : 400,
@@ -216,7 +217,7 @@ export default function Sidebar({
                 <NavItem active={isActive} onClick={() => onSelectProject(ws.name)}>
                   <div style={{
                     width: "22px", height: "22px", borderRadius: "5px", flexShrink: 0,
-                    background: isActive ? "var(--amber-15)" : "rgba(255,255,255,0.06)",
+                    background: isActive ? "var(--amber-15)" : "var(--icon-bg)",
                     border: isActive ? "1px solid var(--amber-25)" : "1px solid var(--b1)",
                     display: "flex", alignItems: "center", justifyContent: "center",
                   }}>
@@ -298,12 +299,12 @@ export default function Sidebar({
         {/* Tools */}
         <SectionLabel>Tools</SectionLabel>
         <NavItem onClick={onOpenDocs}>
-          <Archive size={13} style={{ color: "var(--t3)", flexShrink: 0 }} />
-          <span style={{ fontSize: "13px", color: "var(--t2)" }}>Documents</span>
+          <Archive size={12} style={{ color: "var(--t3)", flexShrink: 0 }} />
+          <span style={{ fontSize: "12.5px", color: "var(--t2)" }}>Documents</span>
         </NavItem>
         <NavItem>
-          <Terminal size={13} style={{ color: "var(--t3)", flexShrink: 0 }} />
-          <span style={{ fontSize: "13px", color: "var(--t2)" }}>Query Log</span>
+          <Terminal size={12} style={{ color: "var(--t3)", flexShrink: 0 }} />
+          <span style={{ fontSize: "12.5px", color: "var(--t2)" }}>Query Log</span>
         </NavItem>
         {session?.role === "Admin" && (
           <NavItem onClick={() => router.push("/admin")}>
@@ -317,6 +318,17 @@ export default function Sidebar({
 
       {/* Bottom user panel */}
       <div style={{ borderTop: "1px solid var(--b1)", padding: "10px 8px" }}>
+        {/* Appearance row */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "4px 10px 10px",
+        }}>
+          <span className="font-mono" style={{ fontSize: "9px", color: "var(--t3)", letterSpacing: "0.14em" }}>
+            APPEARANCE
+          </span>
+          <ThemeToggle />
+        </div>
+
         <NavItem onClick={handleLogout}>
           <LogOut size={13} style={{ color: "var(--t3)", flexShrink: 0 }} />
           <span style={{ fontSize: "13px", color: "var(--t3)" }}>Sign out</span>
@@ -329,7 +341,7 @@ export default function Sidebar({
         }}>
           <div style={{
             width: "32px", height: "32px", borderRadius: "8px", flexShrink: 0,
-            background: "linear-gradient(135deg, rgba(34,211,238,0.2) 0%, rgba(6,182,212,0.1) 100%)",
+            background: "linear-gradient(135deg, var(--cyan-10) 0%, rgba(6,182,212,0.08) 100%)",
             border: "1px solid var(--cyan-25)",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>

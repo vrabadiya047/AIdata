@@ -1,6 +1,13 @@
 # src/engine.py
 import os
 import traceback
+
+# Set SOVEREIGN_OFFLINE_MODE=1 to block all outbound HuggingFace model downloads.
+# Models must be pre-cached locally before enabling this in production.
+if os.environ.get("SOVEREIGN_OFFLINE_MODE") == "1":
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 from llama_index.core import (
     VectorStoreIndex, SimpleDirectoryReader, SummaryIndex,
     StorageContext, load_index_from_storage, PromptTemplate

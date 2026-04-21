@@ -23,8 +23,15 @@ class PIIShield:
     def redact(self, text: str) -> str:
         if not text:
             return text
-        for label, pattern in self.patterns.items():
-            text = re.sub(pattern, f"[{label}]", text)
-        return text
+        try:
+            for label, pattern in self.patterns.items():
+                text = re.sub(pattern, f"[{label}]", text)
+            return text
+        except Exception as exc:
+            import logging
+            logging.error("PIIShield.redact failed — blocking query for safety: %s", exc)
+            raise RuntimeError(
+                "PII redaction failed; query blocked to protect data sovereignty"
+            ) from exc
 
 shield = PIIShield()

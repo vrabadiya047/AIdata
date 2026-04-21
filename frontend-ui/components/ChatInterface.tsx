@@ -164,6 +164,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
   const [currentThread, setCurrentThread] = useState(activeThread);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Load history when project/thread changes
   useEffect(() => {
@@ -173,6 +174,11 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       setMessages(history.map((m) => ({ role: m.role, content: m.content })));
     });
   }, [activeProject, activeThread, username]);
+
+  // Cancel any in-flight stream on unmount
+  useEffect(() => {
+    return () => { abortRef.current?.abort(); };
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -208,12 +214,18 @@ export default function ChatInterface({ activeProject, activeThread, username, o
     setIsLoading(true);
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
+    abortRef.current = new AbortController();
+    const timeoutId = setTimeout(() => abortRef.current?.abort(), 120_000);
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, project: activeProject, username, thread_id: threadId }),
+        signal: abortRef.current.signal,
       });
+
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -240,8 +252,22 @@ export default function ChatInterface({ activeProject, activeThread, username, o
         }
       }
     } catch (err) {
-      console.error("Stream error:", err);
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      const errMsg = isAbort
+        ? "⚠ Request timed out (2 min). Please try again."
+        : "⚠ Connection error. Is the backend running?";
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant" && !last.content) {
+          next[next.length - 1] = { role: "assistant", content: errMsg };
+        } else {
+          next.push({ role: "assistant", content: errMsg });
+        }
+        return next;
+      });
     } finally {
+      clearTimeout(timeoutId);
       setIsLoading(false);
     }
   };

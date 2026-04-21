@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, UploadFile, File, Form, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ import json
 import asyncio
 import os
 import io
+import re
 
 from src.engine import get_query_engine
 from src.database import (
@@ -17,6 +19,7 @@ from src.database import (
     set_project_visibility, share_project_with_user, unshare_project_from_user,
     get_project_shares, share_project_with_group, unshare_project_from_group,
     create_group, delete_group, add_group_member, remove_group_member, get_user_groups,
+    update_index_signal,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
@@ -28,7 +31,26 @@ from src.auth import verify_user, add_user, delete_user, get_all_users, update_u
 from src.analytics import get_audit_trail
 from src.config import DATA_DIR
 
-app = FastAPI(title="Sovereign AI", redirect_slashes=False)
+_DEFAULT_SECRET = "sovereign-dev-secret-2026-change-in-prod"
+JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", _DEFAULT_SECRET)
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 8
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if JWT_SECRET == _DEFAULT_SECRET:
+        print(
+            "\n⚠️  SOVEREIGN SECURITY WARNING ──────────────────────────────\n"
+            "   JWT secret is set to the insecure development default.\n"
+            "   Set SOVEREIGN_JWT_SECRET env var before production deployment.\n"
+            "─────────────────────────────────────────────────────────────\n"
+        )
+    check_and_create_default_admin()
+    yield
+
+
+app = FastAPI(title="Sovereign AI", redirect_slashes=False, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,11 +60,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", "sovereign-dev-secret-2026-change-in-prod")
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = 8
 
-check_and_create_default_admin()
+def safe_filename(filename: str) -> str:
+    """Prevents path traversal — strips directory components and sanitizes chars."""
+    name = os.path.basename(filename.replace("\\", "/"))
+    name = re.sub(r'[^\w\-. ]', '_', name).strip()
+    if not name or name.lstrip('.') == '':
+        raise HTTPException(status_code=400, detail="Invalid or unsafe filename")
+    return name
 
 
 # ─── Auth helpers ────────────────────────────────────────────────────────────
@@ -236,26 +261,22 @@ async def upload_file(
     user: dict = Depends(get_current_user),
 ):
     username = user["username"]
+    clean_name = safe_filename(file.filename or "")
     project_dir = os.path.join(DATA_DIR, username, project)
     os.makedirs(project_dir, exist_ok=True)
 
-    file_path = os.path.join(project_dir, file.filename)
+    file_path = os.path.join(project_dir, clean_name)
     contents = await file.read()
-    with open(file_path, "wb") as f:
-        f.write(contents)
+    await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
-    save_file_project(file.filename, project, username)
-
-    # Invalidate cached index for this project
-    from src.database import update_index_signal
+    save_file_project(clean_name, project, username)
     update_index_signal()
 
-    return {"status": "uploaded", "file": file.filename}
+    return {"status": "uploaded", "file": clean_name}
 
 @app.delete("/api/files/{filename}")
 async def delete_file(filename: str, project: str, user: dict = Depends(get_current_user)):
     handle_delete_file(project, filename, user["username"])
-    from src.database import update_index_signal
     update_index_signal()
     return {"status": "deleted"}
 
@@ -326,14 +347,17 @@ class QueryRequest(BaseModel):
 @app.post("/api/query")
 async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     safe_prompt = shield.redact(data.prompt)
-    engine = get_query_engine(project_filter=data.project, username=data.username)
+
+    # Run blocking retrieval in a thread pool — keeps the event loop free
+    engine = await asyncio.to_thread(get_query_engine, project_filter=data.project, username=data.username)
 
     if not engine:
         raise HTTPException(status_code=404, detail="Workspace index not found.")
 
     save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
 
-    response = engine.query(safe_prompt)
+    # Run blocking LLM query in a thread pool
+    response = await asyncio.to_thread(engine.query, safe_prompt)
 
     async def generate_tokens():
         full_response = ""
@@ -347,13 +371,18 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
             yield "data: [DONE]\n\n"
             return
 
+        # Collect all tokens in thread pool — avoids blocking per-token LLM calls
         try:
-            for token in response.response_gen:
-                full_response += token
-                yield f"data: {json.dumps({'token': token})}\n\n"
-                await asyncio.sleep(0.01)
+            tokens = await asyncio.to_thread(list, response.response_gen)
         except Exception:
             yield f"data: {json.dumps({'token': ' [Error generating response]'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        for token in tokens:
+            full_response += token
+            yield f"data: {json.dumps({'token': token})}\n\n"
+            await asyncio.sleep(0)
 
         save_chat_message(data.project, data.username, data.thread_id, "assistant", full_response)
         background_tasks.add_task(log_query, safe_prompt, full_response)

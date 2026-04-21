@@ -6,11 +6,11 @@
 
 :root {
   /* ── Void backgrounds ── */
-  --void:     #030508;
-  --deep:     #070A12;
-  --surface:  #0C0F1A;
-  --raised:   #11141F;
-  --elevated: #161926;
+  --void:     #0a0a0b;
+  --deep:     #131314;
+  --surface:  #1e1f20;
+  --raised:   #252628;
+  --elevated: #2c2d2f;
 
   /* ── Sovereign amber ── */
   --amber:       #F59E0B;
@@ -97,6 +97,11 @@ body {
   100% { transform: translateY(2000px); opacity: 0;  }
 }
 
+@keyframes typing-cursor {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
 /* ─── Utility classes ───────────────────────────── */
 .font-mono { font-family: 'JetBrains Mono', 'Courier New', monospace; }
 .font-display { font-family: 'Syne', sans-serif; }
@@ -147,4 +152,16 @@ body {
 .sovereign-input:focus-within {
   border-color: rgba(245,158,11,0.35) !important;
   box-shadow: 0 0 0 1px rgba(245,158,11,0.12), 0 0 24px rgba(245,158,11,0.06);
+}
+
+/* ─── Streaming cursor ───────────────────────────── */
+.typing-stream::after {
+  content: '▋';
+  display: inline-block;
+  color: var(--amber);
+  animation: typing-cursor 0.7s ease-in-out infinite;
+  font-size: 0.8em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  opacity: 0.9;
 }

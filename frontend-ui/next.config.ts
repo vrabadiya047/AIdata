@@ -2,8 +2,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  telemetry: false, // Disables Vercel telemetry
-  images: { unoptimized: true }, // No external image optimization
+  images: { unoptimized: true },
   experimental: {
     taint: true, // Prevents raw backend data leakage to the UI
   },

@@ -4,13 +4,16 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  /* ── Void backgrounds ── */
-  --void:     #030508;
-  --deep:     #070A12;
-  --surface:  #0C0F1A;
-  --raised:   #11141F;
-  --elevated: #161926;
+/* ═══════════════════════════════════════════════════
+   DARK THEME  (default)
+═══════════════════════════════════════════════════ */
+:root, [data-theme="dark"] {
+  /* ── Backgrounds ── */
+  --void:     #0a0a0b;
+  --deep:     #131314;
+  --surface:  #1e1f20;
+  --raised:   #252628;
+  --elevated: #2c2d2f;
 
   /* ── Sovereign amber ── */
   --amber:       #F59E0B;
@@ -22,12 +25,10 @@
   --amber-25:    rgba(245, 158, 11, 0.25);
   --amber-40:    rgba(245, 158, 11, 0.40);
 
-  /* ── Data cyan ── */
+  /* ── Accents ── */
   --cyan:    #22D3EE;
   --cyan-10: rgba(34, 211, 238, 0.10);
   --cyan-25: rgba(34, 211, 238, 0.25);
-
-  /* ── Status ── */
   --green:    #10B981;
   --green-10: rgba(16, 185, 129, 0.10);
 
@@ -40,11 +41,76 @@
   --b0: rgba(255, 255, 255, 0.04);
   --b1: rgba(255, 255, 255, 0.07);
   --b2: rgba(255, 255, 255, 0.12);
+
+  /* ── Theme-adaptive ── */
+  --hover-bg:      rgba(255, 255, 255, 0.04);
+  --icon-bg:       rgba(255, 255, 255, 0.06);
+  --frosted-light: rgba(10, 10, 11, 0.80);
+  --frosted-heavy: rgba(10, 10, 11, 0.92);
+  --card-shadow:   0 1px 3px rgba(0,0,0,0.35), 0 4px 20px rgba(0,0,0,0.25);
+  --modal-shadow:  0 8px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.3);
+  --sidebar-ring:  none;
 }
 
+/* ═══════════════════════════════════════════════════
+   LIGHT THEME
+═══════════════════════════════════════════════════ */
+[data-theme="light"] {
+  /* ── Backgrounds ── */
+  --void:     #ffffff;
+  --deep:     #f5f5f6;
+  --surface:  #efefef;
+  --raised:   #ffffff;
+  --elevated: #ffffff;
+
+  /* ── Sovereign amber (darker for WCAG on white) ── */
+  --amber:       #c77c0d;
+  --amber-light: #f59e0b;
+  --amber-dark:  #92400e;
+  --amber-5:     rgba(199, 124, 13, 0.06);
+  --amber-10:    rgba(199, 124, 13, 0.10);
+  --amber-15:    rgba(199, 124, 13, 0.15);
+  --amber-25:    rgba(199, 124, 13, 0.28);
+  --amber-40:    rgba(199, 124, 13, 0.45);
+
+  /* ── Accents ── */
+  --cyan:    #0891b2;
+  --cyan-10: rgba(8, 145, 178, 0.10);
+  --cyan-25: rgba(8, 145, 178, 0.25);
+  --green:    #059669;
+  --green-10: rgba(5, 150, 105, 0.10);
+
+  /* ── Text ── */
+  --t1: #0f0f11;
+  --t2: #4a4a5e;
+  --t3: #8888a0;
+
+  /* ── Borders ── */
+  --b0: rgba(0, 0, 0, 0.04);
+  --b1: rgba(0, 0, 0, 0.08);
+  --b2: rgba(0, 0, 0, 0.14);
+
+  /* ── Theme-adaptive ── */
+  --hover-bg:      rgba(0, 0, 0, 0.04);
+  --icon-bg:       rgba(0, 0, 0, 0.05);
+  --frosted-light: rgba(255, 255, 255, 0.82);
+  --frosted-heavy: rgba(255, 255, 255, 0.96);
+  --card-shadow:   0 1px 2px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.07);
+  --modal-shadow:  0 8px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
+  --sidebar-ring:  1px 0 0 var(--b1), 4px 0 20px rgba(0,0,0,0.05);
+}
+
+/* ═══════════════════════════════════════════════════
+   BASE
+═══════════════════════════════════════════════════ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
 
 html, body { height: 100%; }
+
+html {
+  /* Smooth theme switch — no jarring flash */
+  transition: background-color 0.25s ease;
+}
 
 body {
   font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -53,13 +119,14 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  transition: background-color 0.25s ease, color 0.2s ease;
 }
 
 /* ─── Scrollbar ─────────────────────────────────── */
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+::-webkit-scrollbar-thumb { background: var(--b2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--t3); }
 
 /* ─── Keyframes ─────────────────────────────────── */
 @keyframes fadeUp {
@@ -93,15 +160,20 @@ body {
 }
 
 @keyframes scan {
-  0%   { transform: translateY(0%);    opacity: 0.6; }
-  100% { transform: translateY(2000px); opacity: 0;  }
+  0%   { transform: translateY(0%);     opacity: 0.6; }
+  100% { transform: translateY(2000px); opacity: 0;   }
+}
+
+@keyframes typing-cursor {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
 }
 
 /* ─── Utility classes ───────────────────────────── */
-.font-mono { font-family: 'JetBrains Mono', 'Courier New', monospace; }
+.font-mono    { font-family: 'JetBrains Mono', 'Courier New', monospace; }
 .font-display { font-family: 'Syne', sans-serif; }
 
-.fade-up { animation: fadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.fade-up         { animation: fadeUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both; }
 .fade-up-delay-1 { animation-delay: 60ms; }
 .fade-up-delay-2 { animation-delay: 120ms; }
 .fade-up-delay-3 { animation-delay: 180ms; }
@@ -126,13 +198,19 @@ body {
   background-size: 200px;
 }
 
-/* ─── Subtle dot grid ───────────────────────────── */
+[data-theme="light"] .grain-overlay::before { opacity: 0.012; }
+
+/* ─── Dot grid ───────────────────────────────────── */
 .dot-grid {
   background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
   background-size: 24px 24px;
 }
 
-/* ─── Scan line effect (decorative) ─────────────── */
+[data-theme="light"] .dot-grid {
+  background-image: radial-gradient(rgba(0,0,0,0.045) 1px, transparent 1px);
+}
+
+/* ─── Scan line ─────────────────────────────────── */
 .scan-line::after {
   content: '';
   position: absolute;
@@ -145,6 +223,34 @@ body {
 
 /* ─── Input glow on focus ────────────────────────── */
 .sovereign-input:focus-within {
-  border-color: rgba(245,158,11,0.35) !important;
-  box-shadow: 0 0 0 1px rgba(245,158,11,0.12), 0 0 24px rgba(245,158,11,0.06);
+  border-color: var(--amber-40) !important;
+  box-shadow: 0 0 0 1px var(--amber-10), 0 0 24px var(--amber-5);
+}
+
+/* ─── Streaming cursor ───────────────────────────── */
+.typing-stream::after {
+  content: '▋';
+  display: inline-block;
+  color: var(--amber);
+  animation: typing-cursor 0.7s ease-in-out infinite;
+  font-size: 0.8em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  opacity: 0.9;
+}
+
+/* ─── Sidebar shadow (light mode only) ─────────────── */
+[data-theme="light"] aside {
+  box-shadow: var(--sidebar-ring) !important;
+}
+
+/* ─── Card elevation in light mode ─────────────────── */
+[data-theme="light"] .sovereign-card {
+  box-shadow: var(--card-shadow);
+}
+
+/* ─── Modal backdrop ────────────────────────────── */
+.modal-overlay {
+  background: var(--frosted-light);
+  backdrop-filter: blur(12px);
 }

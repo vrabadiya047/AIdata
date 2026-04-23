@@ -1,6 +1,13 @@
 # src/engine.py
 import os
 import traceback
+
+# Set SOVEREIGN_OFFLINE_MODE=1 to block all outbound HuggingFace model downloads.
+# Models must be pre-cached locally before enabling this in production.
+if os.environ.get("SOVEREIGN_OFFLINE_MODE") == "1":
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 from llama_index.core import (
     VectorStoreIndex, SimpleDirectoryReader, SummaryIndex,
     StorageContext, load_index_from_storage, PromptTemplate
@@ -13,7 +20,7 @@ from llama_index.readers.file import PyMuPDFReader
 from llama_index.postprocessor.sbert_rerank import SentenceTransformerRerank
 from .privacy import shield
 
-from .config import STORAGE_DIR, DATA_DIR, setup_ai_settings
+from .config import STORAGE_DIR, DATA_DIR, setup_ai_settings, _local_model_path, RERANK_MODEL
 from src.database import get_metadata_for_file
 
 setup_ai_settings()
@@ -112,7 +119,7 @@ def get_query_engine(streaming=True, project_filter=None, mode="chat", username=
 
         bm25 = BM25Retriever.from_defaults(nodes=all_nodes, similarity_top_k=10)
         hybrid = QueryFusionRetriever([vector_retriever, bm25], similarity_top_k=10, num_queries=3, mode="reciprocal_rerank")
-        reranker = SentenceTransformerRerank(model="BAAI/bge-reranker-base", top_n=3)
+        reranker = SentenceTransformerRerank(model=_local_model_path(RERANK_MODEL), top_n=3)
 
         engine = RetrieverQueryEngine.from_args(retriever=hybrid, streaming=streaming, node_postprocessors=[reranker])
         engine.update_prompts({"response_synthesizer:text_qa_template": SOVEREIGN_PROMPT})

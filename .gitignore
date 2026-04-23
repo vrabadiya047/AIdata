@@ -1,0 +1,47 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Database & logs ───────────────────────────────────────────────────────────
+backend-api/logs/*.db
+backend-api/logs/*.db-shm
+backend-api/logs/*.db-wal
+backend-api/logs/*.jsonl
+backend-api/logs/*.json
+
+# ── Uploaded documents ────────────────────────────────────────────────────────
+backend-api/data/
+
+# ── Vector indexes (auto-rebuilt from documents) ─────────────────────────────
+backend-api/storage/
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+backend-api/.env
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+frontend-ui/node_modules/
+frontend-ui/.next/
+frontend-ui/out/
+frontend-ui/build/
+frontend-ui/.env*
+frontend-ui/*.tsbuildinfo
+frontend-ui/next-env.d.ts
+
+# ── Claude Code local settings ────────────────────────────────────────────────
+.claude/settings.local.json
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -20,7 +20,7 @@ from src.database import (
     set_project_visibility, share_project_with_user, unshare_project_from_user,
     get_project_shares, share_project_with_group, unshare_project_from_group,
     create_group, delete_group, add_group_member, remove_group_member, get_user_groups,
-    update_index_signal,
+    rename_project, rename_thread, delete_thread,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
@@ -30,7 +30,7 @@ from src.privacy import shield
 from src.logger import log_query
 from src.auth import verify_user, add_user, delete_user, get_all_users, update_user_password, check_and_create_default_admin
 from src.analytics import get_audit_trail
-from src.config import DATA_DIR, STORAGE_DIR
+from src.config import DATA_DIR, STORAGE_DIR, LOG_DIR
 
 _DEFAULT_SECRET = "sovereign-dev-secret-2026-change-in-prod"
 JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", _DEFAULT_SECRET)
@@ -75,6 +75,10 @@ def invalidate_project_index(username: str, project: str):
     storage_path = os.path.join(STORAGE_DIR, username, project)
     if os.path.exists(storage_path):
         shutil.rmtree(storage_path)
+    # Also clear the all-projects aggregate index so stale data doesn't linger
+    all_idx = os.path.join(STORAGE_DIR, username, "all_projects")
+    if os.path.exists(all_idx):
+        shutil.rmtree(all_idx)
 
 
 # ─── Auth helpers ────────────────────────────────────────────────────────────
@@ -181,6 +185,24 @@ async def create_project(data: ProjectRequest, user: dict = Depends(get_current_
 async def delete_project(name: str, user: dict = Depends(get_current_user)):
     handle_delete_project(name, user["username"])
     return {"status": "deleted"}
+
+class RenameProjectRequest(BaseModel):
+    new_name: str
+
+@app.put("/api/projects/{name}")
+async def rename_project_endpoint(name: str, data: RenameProjectRequest, user: dict = Depends(get_current_user)):
+    new_name = data.new_name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    username = user["username"]
+    old_data = os.path.join(DATA_DIR, username, name)
+    new_data = os.path.join(DATA_DIR, username, new_name)
+    if os.path.exists(old_data):
+        os.rename(old_data, new_data)
+    # Wipe both the per-project and the all-projects aggregate index
+    invalidate_project_index(username, name)
+    rename_project(name, new_name, username)
+    return {"status": "renamed", "name": new_name}
 
 class VisibilityRequest(BaseModel):
     visibility: str  # 'private' | 'public' | 'shared'
@@ -299,6 +321,39 @@ async def list_files(project: str, user: dict = Depends(get_current_user)):
 async def get_threads(project: str, user: dict = Depends(get_current_user)):
     threads = get_project_threads(project, user["username"])
     return {"threads": threads}
+
+class RenameThreadRequest(BaseModel):
+    project: str
+    old_id: str
+    new_id: str
+
+@app.put("/api/threads")
+async def rename_thread_endpoint(data: RenameThreadRequest, user: dict = Depends(get_current_user)):
+    rename_thread(data.project, user["username"], data.old_id, data.new_id)
+    return {"status": "renamed"}
+
+@app.delete("/api/threads")
+async def delete_thread_endpoint(project: str, thread_id: str, user: dict = Depends(get_current_user)):
+    delete_thread(project, user["username"], thread_id)
+    return {"status": "deleted"}
+
+
+# ─── Query Log ────────────────────────────────────────────────────────────────
+
+@app.get("/api/query-log")
+async def get_query_log(user: dict = Depends(get_current_user)):
+    log_file = os.path.join(LOG_DIR, "query_log.jsonl")
+    entries = []
+    if os.path.exists(log_file):
+        with open(log_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+    return {"entries": entries[-200:]}
 
 
 # ─── Chat history ─────────────────────────────────────────────────────────────

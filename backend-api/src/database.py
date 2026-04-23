@@ -252,15 +252,40 @@ def get_user_groups(owner):
 
 # ─── Threads / Chat ──────────────────────────────────────────────────────────
 
+def rename_project(old_name, new_name, username):
+    with sqlite3.connect(DB_PATH, timeout=5) as conn:
+        conn.execute('UPDATE custom_projects SET name=? WHERE name=? AND owner=?', (new_name, old_name, username))
+        conn.execute('UPDATE file_metadata SET project_tag=? WHERE project_tag=? AND owner=?', (new_name, old_name, username))
+        conn.execute('UPDATE chat_history SET project_tag=? WHERE project_tag=? AND owner=?', (new_name, old_name, username))
+        conn.execute('UPDATE project_shares SET project_name=? WHERE project_name=? AND project_owner=?', (new_name, old_name, username))
+        conn.execute('UPDATE project_group_shares SET project_name=? WHERE project_name=? AND project_owner=?', (new_name, old_name, username))
+        conn.commit()
+
 def get_project_threads(project_tag, username):
     with sqlite3.connect(DB_PATH, timeout=5) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT DISTINCT thread_id FROM chat_history WHERE project_tag = ? AND owner = ?',
+            'SELECT thread_id FROM chat_history WHERE project_tag = ? AND owner = ? GROUP BY thread_id ORDER BY MAX(timestamp) DESC',
             (project_tag, username)
         )
         threads = [row[0] for row in cursor.fetchall()]
-        return threads if threads else ["General"]
+        return threads if threads else []
+
+def rename_thread(project, username, old_id, new_id):
+    with sqlite3.connect(DB_PATH, timeout=5) as conn:
+        conn.execute(
+            'UPDATE chat_history SET thread_id=? WHERE thread_id=? AND project_tag=? AND owner=?',
+            (new_id, old_id, project, username)
+        )
+        conn.commit()
+
+def delete_thread(project, username, thread_id):
+    with sqlite3.connect(DB_PATH, timeout=5) as conn:
+        conn.execute(
+            'DELETE FROM chat_history WHERE thread_id=? AND project_tag=? AND owner=?',
+            (thread_id, project, username)
+        )
+        conn.commit()
 
 def save_chat_message(project, username, thread_id, role, content):
     with sqlite3.connect(DB_PATH, timeout=5) as conn:

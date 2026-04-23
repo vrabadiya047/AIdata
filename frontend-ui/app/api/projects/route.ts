@@ -25,6 +25,24 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data, { status: res.status });
 }
 
+export async function PUT(req: NextRequest) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const { old_name, new_name } = await req.json();
+  const res = await fetch(`${BACKEND}/api/projects/${encodeURIComponent(old_name)}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: `sovereign_session=${sessionCookie(req)}`,
+    },
+    body: JSON.stringify({ new_name }),
+  });
+
+  const data = await res.json();
+  return NextResponse.json(data, { status: res.status });
+}
+
 export async function DELETE(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

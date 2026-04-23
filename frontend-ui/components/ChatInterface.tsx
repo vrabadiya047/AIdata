@@ -1,12 +1,20 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Shield, Lock, ChevronRight, Cpu, Layers } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, Shield, Lock, ChevronRight, Cpu, Layers } from "lucide-react";
 import { getThreadHistory } from "@/app/actions";
+
+interface AttachedFile {
+  file: File;
+  name: string;
+  isImage: boolean;
+  preview?: string;
+}
 
 interface Message {
   role: "user" | "assistant";
   content: string;
+  attachments?: { name: string; preview?: string; isImage: boolean }[];
 }
 
 interface ChatInterfaceProps {
@@ -31,7 +39,7 @@ function makeThreadName(prompt: string): string {
     : `Session · ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 }
 
-/* ─── Atoms ─────────────────────────────────────── */
+// ─── Atoms ────────────────────────────────────────────────────────────────────
 
 function ThinkingDots() {
   return (
@@ -45,21 +53,43 @@ function ThinkingDots() {
   );
 }
 
-function UserMessage({ content }: { content: string }) {
+function UserMessage({ content, attachments }: {
+  content: string;
+  attachments?: { name: string; preview?: string; isImage: boolean }[];
+}) {
   return (
     <div className="fade-up" style={{ display: "flex", justifyContent: "flex-end", paddingLeft: "16%" }}>
-      <div style={{
-        background: "var(--raised)",
-        border: "1px solid var(--b2)",
-        borderRadius: "18px 18px 4px 18px",
-        padding: "13px 18px",
-        fontSize: "14px",
-        lineHeight: "1.7",
-        color: "var(--t1)",
-        wordBreak: "break-word",
-        boxShadow: "var(--card-shadow)",
-        maxWidth: "540px",
-      }}>{content}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px", alignItems: "flex-end", maxWidth: "540px" }}>
+        {/* Attachment previews */}
+        {attachments && attachments.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-end" }}>
+            {attachments.map((a, i) => (
+              <div key={i} style={{ borderRadius: "10px", overflow: "hidden", border: "1px solid var(--b2)" }}>
+                {a.isImage && a.preview ? (
+                  <img src={a.preview} alt={a.name} style={{ maxHeight: "180px", maxWidth: "260px", display: "block", objectFit: "cover" }} />
+                ) : (
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: "6px", padding: "6px 10px",
+                    background: "var(--raised)", fontSize: "12px", color: "var(--t2)",
+                  }}>
+                    <FileText size={12} style={{ color: "var(--amber)" }} />
+                    <span style={{ maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Message text */}
+        {content && (
+          <div style={{
+            background: "var(--raised)", border: "1px solid var(--b2)",
+            borderRadius: "18px 18px 4px 18px",
+            padding: "13px 18px", fontSize: "14px", lineHeight: "1.7",
+            color: "var(--t1)", wordBreak: "break-word", boxShadow: "var(--card-shadow)",
+          }}>{content}</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -69,19 +99,16 @@ function AIMessage({ content, thinking, streaming }: {
 }) {
   return (
     <div className="fade-up" style={{ display: "flex", gap: "14px", alignItems: "flex-start", paddingRight: "12%" }}>
-      {/* Avatar */}
       <div style={{
         width: "30px", height: "30px", flexShrink: 0, borderRadius: "9px", marginTop: "1px",
         background: "linear-gradient(135deg, var(--amber-15) 0%, var(--amber-5) 100%)",
         border: "1px solid var(--amber-25)",
         display: "flex", alignItems: "center", justifyContent: "center",
-        transition: "box-shadow 0.3s ease",
         boxShadow: thinking ? "0 0 16px rgba(245,158,11,0.28)" : "none",
+        transition: "box-shadow 0.3s ease",
       }}>
         <Shield size={14} style={{ color: "var(--amber)" }} />
       </div>
-
-      {/* Content */}
       <div style={{ flex: 1, minWidth: 0 }}>
         {thinking ? (
           <>
@@ -89,7 +116,6 @@ function AIMessage({ content, thinking, streaming }: {
             <div style={{
               height: "2px", width: "52px", marginTop: "10px", borderRadius: "2px",
               background: "linear-gradient(90deg, var(--amber-25) 0%, transparent 100%)",
-              backgroundSize: "200% 100%",
               animation: "shimmer-track 1.5s linear infinite",
             }} />
           </>
@@ -101,10 +127,7 @@ function AIMessage({ content, thinking, streaming }: {
             }}>S · AI</div>
             <div
               className={streaming ? "typing-stream" : ""}
-              style={{
-                fontSize: "14px", lineHeight: "1.78", color: "var(--t1)",
-                whiteSpace: "pre-wrap", wordBreak: "break-word",
-              }}
+              style={{ fontSize: "14px", lineHeight: "1.78", color: "var(--t1)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
             >{content}</div>
           </>
         )}
@@ -116,30 +139,17 @@ function AIMessage({ content, thinking, streaming }: {
 function SuggestionPill({ text, delay, onClick }: { text: string; delay: number; onClick: () => void }) {
   const [hov, setHov] = useState(false);
   return (
-    <button
-      className="fade-up"
-      onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{ animationDelay: `${delay}ms` }}
-    >
+    <button className="fade-up" onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} style={{ animationDelay: `${delay}ms` }}>
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "12px 18px", borderRadius: "12px",
         background: hov ? "var(--raised)" : "transparent",
         border: `1px solid ${hov ? "var(--amber-25)" : "var(--b1)"}`,
-        transition: "all 0.18s ease",
-        cursor: "pointer",
+        transition: "all 0.18s ease", cursor: "pointer",
         boxShadow: hov ? "0 2px 12px rgba(245,158,11,0.07)" : "none",
       }}>
-        <span style={{
-          fontSize: "13px", color: hov ? "var(--t1)" : "var(--t2)",
-          transition: "color 0.18s", textAlign: "left",
-        }}>{text}</span>
-        <ChevronRight size={13} style={{
-          color: hov ? "var(--amber)" : "var(--t3)",
-          transition: "color 0.18s", flexShrink: 0, marginLeft: "12px",
-        }} />
+        <span style={{ fontSize: "13px", color: hov ? "var(--t1)" : "var(--t2)", transition: "color 0.18s", textAlign: "left" }}>{text}</span>
+        <ChevronRight size={13} style={{ color: hov ? "var(--amber)" : "var(--t3)", transition: "color 0.18s", flexShrink: 0, marginLeft: "12px" }} />
       </div>
     </button>
   );
@@ -153,7 +163,6 @@ function EmptyState({ project, onSelect }: { project: string; onSelect: (t: stri
       padding: "40px 32px", textAlign: "center",
       maxWidth: "680px", margin: "0 auto", width: "100%",
     }}>
-      {/* Glow + Icon */}
       <div style={{ position: "relative", marginBottom: "32px" }}>
         <div style={{
           position: "absolute", inset: "-32px",
@@ -165,30 +174,22 @@ function EmptyState({ project, onSelect }: { project: string; onSelect: (t: stri
           background: "linear-gradient(135deg, var(--amber-15) 0%, var(--amber-5) 100%)",
           border: "1px solid var(--amber-25)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          boxShadow: "0 4px 28px rgba(245,158,11,0.1)",
-          position: "relative",
+          boxShadow: "0 4px 28px rgba(245,158,11,0.1)", position: "relative",
         }}>
           <Shield size={30} style={{ color: "var(--amber)" }} />
         </div>
       </div>
-
       <h1 className="font-display" style={{
         fontSize: "27px", fontWeight: 800, color: "var(--t1)",
         marginBottom: "10px", letterSpacing: "-0.02em", lineHeight: 1.2,
       }}>
         {project ? `${project}` : "How can I help today?"}
       </h1>
-
-      <p style={{
-        fontSize: "14px", color: "var(--t2)", marginBottom: "36px",
-        lineHeight: 1.65, maxWidth: "380px",
-      }}>
+      <p style={{ fontSize: "14px", color: "var(--t2)", marginBottom: "36px", lineHeight: 1.65, maxWidth: "380px" }}>
         {project
           ? "Ask anything about your documents. Processing is fully local and private."
           : "Select a workspace from the sidebar to begin your session."}
       </p>
-
-      {/* Capability badges */}
       <div style={{ display: "flex", gap: "8px", marginBottom: "32px", flexWrap: "wrap", justifyContent: "center" }}>
         {[
           { icon: Lock, label: "End-to-end encrypted" },
@@ -206,8 +207,6 @@ function EmptyState({ project, onSelect }: { project: string; onSelect: (t: stri
           </div>
         ))}
       </div>
-
-      {/* Suggestion pills */}
       {project && (
         <div style={{ display: "flex", flexDirection: "column", gap: "7px", width: "100%" }}>
           {SUGGESTIONS.map((s, i) => (
@@ -243,17 +242,67 @@ function SendButton({ onClick, disabled }: { onClick: () => void; disabled: bool
   );
 }
 
-/* ─── Main component ─────────────────────────────── */
+function StopButton({ onClick }: { onClick: () => void }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      title="Stop generating"
+      style={{
+        width: "34px", height: "34px", borderRadius: "10px", flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: hov ? "rgba(239,68,68,0.18)" : "rgba(239,68,68,0.10)",
+        border: "1px solid rgba(239,68,68,0.3)",
+        color: "#ef4444", cursor: "pointer",
+        transition: "all 0.15s ease",
+        transform: hov ? "scale(1.06)" : "scale(1)",
+      }}
+    >
+      <Square size={13} fill="currentColor" />
+    </button>
+  );
+}
+
+function AttachButton({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {
+  const [hov, setHov] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      onMouseEnter={() => !disabled && setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      title="Attach file or image"
+      style={{
+        width: "28px", height: "28px", borderRadius: "8px", border: "none",
+        cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: hov ? "var(--hover-bg)" : "transparent",
+        color: disabled ? "var(--t3)" : hov ? "var(--amber)" : "var(--t3)",
+        transition: "all 0.15s ease",
+      }}
+    >
+      <Paperclip size={15} />
+    </button>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ChatInterface({ activeProject, activeThread, username, onNewThread }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [currentThread, setCurrentThread] = useState(activeThread);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
+  const userStoppedRef = useRef(false);
 
   useEffect(() => {
     if (!activeProject || !username) { setMessages([]); return; }
@@ -262,7 +311,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
     let cancelled = false;
     getThreadHistory(activeProject, username, activeThread).then(history => {
       if (cancelled) return;
-      setMessages(history.map(m => ({ role: m.role, content: m.content })));
+      setMessages(history.map(m => ({ role: m.role as "user" | "assistant", content: m.content })));
     });
     return () => { cancelled = true; };
   }, [activeProject, activeThread, username]);
@@ -280,8 +329,50 @@ export default function ChatInterface({ activeProject, activeThread, username, o
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }, [input]);
 
+  // ── Attachment handling ───────────────────────────────────────────────────
+
+  function handleAttachClick() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files) return;
+    const newAttachments: AttachedFile[] = [];
+    for (const file of Array.from(files)) {
+      const isImage = file.type.startsWith("image/");
+      let preview: string | undefined;
+      if (isImage) {
+        preview = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(file);
+        });
+      }
+      newAttachments.push({ file, name: file.name, isImage, preview });
+    }
+    setAttachedFiles(prev => [...prev, ...newAttachments]);
+    // Reset input so same file can be re-selected
+    e.target.value = "";
+  }
+
+  function removeAttachment(index: number) {
+    setAttachedFiles(prev => prev.filter((_, i) => i !== index));
+  }
+
+  // ── Stop ─────────────────────────────────────────────────────────────────
+
+  function handleStop() {
+    userStoppedRef.current = true;
+    abortRef.current?.abort();
+  }
+
+  // ── Send ─────────────────────────────────────────────────────────────────
+
   const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    const hasText = input.trim().length > 0;
+    const hasFiles = attachedFiles.length > 0;
+    if ((!hasText && !hasFiles) || isLoading) return;
     if (!activeProject) {
       setMessages(prev => [...prev, { role: "assistant", content: "⚠ Please select a workspace in the sidebar first." }]);
       setInput("");
@@ -289,28 +380,44 @@ export default function ChatInterface({ activeProject, activeThread, username, o
     }
 
     const prompt = input.trim();
+    const filesToUpload = [...attachedFiles];
     let threadId = currentThread;
 
     if (messages.length === 0 && threadId === "General") {
-      threadId = makeThreadName(prompt);
+      threadId = makeThreadName(prompt || filesToUpload[0].name);
       setCurrentThread(threadId);
       onNewThread(threadId);
     }
 
-    setMessages(prev => [...prev, { role: "user", content: prompt }]);
+    // Snapshot attachments for the message bubble, then clear
+    const attachmentMeta = filesToUpload.map(f => ({ name: f.name, preview: f.preview, isImage: f.isImage }));
+    setAttachedFiles([]);
     setInput("");
     streamingRef.current = true;
+    userStoppedRef.current = false;
     setIsLoading(true);
+
+    if (prompt || attachmentMeta.length > 0) {
+      setMessages(prev => [...prev, { role: "user", content: prompt, attachments: attachmentMeta.length > 0 ? attachmentMeta : undefined }]);
+    }
     setMessages(prev => [...prev, { role: "assistant", content: "" }]);
 
     abortRef.current = new AbortController();
-    const timeoutId = setTimeout(() => abortRef.current?.abort(), 120_000);
+    const timeoutId = setTimeout(() => abortRef.current?.abort(), 180_000);
 
     try {
+      // Upload attached files first
+      for (const af of filesToUpload) {
+        const fd = new FormData();
+        fd.append("file", af.file);
+        fd.append("project", activeProject);
+        await fetch("/api/upload", { method: "POST", body: fd });
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, project: activeProject, username, thread_id: threadId }),
+        body: JSON.stringify({ prompt: prompt || `Describe the attached file(s): ${filesToUpload.map(f => f.name).join(", ")}`, project: activeProject, username, thread_id: threadId }),
         signal: abortRef.current.signal,
       });
 
@@ -342,53 +449,58 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       }
     } catch (err) {
       const isAbort = err instanceof Error && err.name === "AbortError";
-      const errMsg = isAbort
-        ? "⚠ Request timed out (2 min). Please try again."
-        : "⚠ Connection error. Is the backend running?";
-      setMessages(prev => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last?.role === "assistant" && !last.content) {
-          next[next.length - 1] = { role: "assistant", content: errMsg };
-        } else {
-          next.push({ role: "assistant", content: errMsg });
-        }
-        return next;
-      });
+      if (isAbort && userStoppedRef.current) {
+        // User manually stopped — remove the empty bubble if nothing was generated
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant" && !last.content) return prev.slice(0, -1);
+          return prev;
+        });
+      } else {
+        const errMsg = isAbort
+          ? "⚠ Request timed out. Please try again."
+          : "⚠ Connection error. Is the backend running?";
+        setMessages(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role === "assistant" && !last.content) {
+            next[next.length - 1] = { role: "assistant", content: errMsg };
+          } else {
+            next.push({ role: "assistant", content: errMsg });
+          }
+          return next;
+        });
+      }
     } finally {
       clearTimeout(timeoutId);
       streamingRef.current = false;
+      userStoppedRef.current = false;
       setIsLoading(false);
     }
   };
 
   const hasMessages = messages.length > 0;
-  const displayProject = activeProject || "No workspace selected";
+  const canSend = (input.trim().length > 0 || attachedFiles.length > 0) && !isLoading;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative", zIndex: 1 }}>
 
-      {/* ── Header ─────────────────────────────────── */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "14px 28px",
-        borderBottom: "1px solid var(--b1)",
-        background: "var(--frosted-light)",
-        backdropFilter: "blur(16px)",
+        padding: "14px 28px", borderBottom: "1px solid var(--b1)",
+        background: "var(--frosted-light)", backdropFilter: "blur(16px)",
         flexShrink: 0, zIndex: 10,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
           <Layers size={12} style={{ color: "var(--t3)" }} />
           <span style={{ fontSize: "12px", color: "var(--t3)" }}>Workspace</span>
           <ChevronRight size={11} style={{ color: "var(--b2)" }} />
-          <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--t1)" }}>{displayProject}</span>
+          <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--t1)" }}>{activeProject || "No workspace selected"}</span>
           {activeThread && activeThread !== "General" && (
             <>
               <ChevronRight size={11} style={{ color: "var(--b2)" }} />
-              <span style={{
-                fontSize: "12px", color: "var(--t2)",
-                maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              }}>{activeThread}</span>
+              <span style={{ fontSize: "12px", color: "var(--t2)", maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeThread}</span>
             </>
           )}
         </div>
@@ -410,11 +522,8 @@ export default function ChatInterface({ activeProject, activeThread, username, o
         </div>
       </header>
 
-      {/* ── Messages ───────────────────────────────── */}
-      <div ref={scrollRef} style={{
-        flex: 1, overflowY: "auto", overflowX: "hidden",
-        display: "flex", flexDirection: "column",
-      }}>
+      {/* ── Messages ───────────────────────────────────────────────────────── */}
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column" }}>
         {!hasMessages ? (
           <EmptyState project={activeProject} onSelect={t => setInput(t)} />
         ) : (
@@ -425,7 +534,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
           }}>
             {messages.map((msg, i) =>
               msg.role === "user" ? (
-                <UserMessage key={i} content={msg.content} />
+                <UserMessage key={i} content={msg.content} attachments={msg.attachments} />
               ) : (
                 <AIMessage key={i} content={msg.content}
                   thinking={isLoading && i === messages.length - 1 && !msg.content}
@@ -437,7 +546,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
         )}
       </div>
 
-      {/* ── Input ──────────────────────────────────── */}
+      {/* ── Input ──────────────────────────────────────────────────────────── */}
       <div style={{
         padding: "14px 28px 20px",
         background: "var(--frosted-heavy)", backdropFilter: "blur(16px)",
@@ -445,23 +554,65 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       }}>
         <div style={{ maxWidth: "780px", margin: "0 auto" }}>
           <div className="sovereign-input" style={{
-            background: "var(--raised)",
-            border: "1px solid var(--b2)",
-            borderRadius: "16px",
-            boxShadow: "var(--card-shadow)",
+            background: "var(--raised)", border: "1px solid var(--b2)",
+            borderRadius: "16px", boxShadow: "var(--card-shadow)",
             transition: "border-color 0.2s, box-shadow 0.2s",
           }}>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: "10px", padding: "13px 14px 11px" }}>
+            {/* Attachment chips */}
+            {attachedFiles.length > 0 && (
+              <div style={{
+                display: "flex", flexWrap: "wrap", gap: "6px",
+                padding: "10px 14px 6px",
+                borderBottom: "1px solid var(--b1)",
+              }}>
+                {attachedFiles.map((f, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: "5px",
+                    padding: f.isImage && f.preview ? 0 : "4px 4px 4px 8px",
+                    borderRadius: "8px", overflow: "hidden",
+                    background: "var(--amber-10)", border: "1px solid var(--amber-25)",
+                    fontSize: "12px", color: "var(--t2)",
+                  }}>
+                    {f.isImage && f.preview ? (
+                      <>
+                        <img src={f.preview} alt={f.name} style={{ width: "32px", height: "32px", objectFit: "cover" }} />
+                        <span style={{ padding: "0 4px", maxWidth: "100px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileText size={12} style={{ color: "var(--amber)" }} />
+                        <span style={{ maxWidth: "120px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                      </>
+                    )}
+                    <button
+                      onClick={() => removeAttachment(i)}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)", padding: "4px", display: "flex", alignItems: "center" }}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Input row */}
+            <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", padding: "11px 12px 10px" }}>
+              {/* Attach button */}
+              <AttachButton onClick={handleAttachClick} disabled={isLoading} />
+
+              {/* Prompt indicator */}
               <span className="font-mono" style={{
                 fontSize: "15px", color: "var(--amber-40)",
                 paddingBottom: "3px", flexShrink: 0, userSelect: "none",
               }}>›</span>
+
+              {/* Textarea */}
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                placeholder={activeProject ? "Ask anything about your documents…" : "Select a workspace to begin…"}
+                placeholder={activeProject ? "Ask anything, or attach a file…" : "Select a workspace to begin…"}
                 disabled={isLoading}
                 rows={1}
                 style={{
@@ -471,9 +622,24 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                   overflowY: "auto", paddingTop: "1px",
                 }}
               />
-              <SendButton onClick={handleSend} disabled={isLoading || !input.trim()} />
+
+              {/* Send / Stop */}
+              {isLoading
+                ? <StopButton onClick={handleStop} />
+                : <SendButton onClick={handleSend} disabled={!canSend} />
+              }
             </div>
           </div>
+
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".pdf,.txt,.csv,.docx,.doc,.png,.jpg,.jpeg,.bmp,.tiff,.tif,.gif,.webp"
+            style={{ display: "none" }}
+            onChange={handleFileSelect}
+          />
 
           <p className="font-mono" style={{
             textAlign: "center", fontSize: "9px", color: "var(--t3)",

@@ -19,6 +19,7 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.readers.file import PyMuPDFReader
 from llama_index.postprocessor.sbert_rerank import SentenceTransformerRerank
 from .privacy import shield
+from .image_reader import get_image_file_extractor
 
 from .config import STORAGE_DIR, DATA_DIR, setup_ai_settings, _local_model_path, RERANK_MODEL
 from src.database import get_metadata_for_file
@@ -76,10 +77,10 @@ def get_index(project_filter=None, username=None):
     
     # Load documents safely
     reader = SimpleDirectoryReader(
-        input_dir=target_data_dir, 
-        recursive=True, 
-        file_extractor={".pdf": PyMuPDFReader()}, 
-        file_metadata=safe_get_metadata  # <-- Fixed: Uses our safe wrapper
+        input_dir=target_data_dir,
+        recursive=True,
+        file_extractor={".pdf": PyMuPDFReader(), **get_image_file_extractor()},
+        file_metadata=safe_get_metadata
     )
     documents = reader.load_data()
     

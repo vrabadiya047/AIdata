@@ -23,6 +23,7 @@ backend-api/data/
 
 # ── Vector indexes (auto-rebuilt from documents) ─────────────────────────────
 backend-api/storage/
+backend-api/__pycache__/
 
 # ── Environment & secrets ─────────────────────────────────────────────────────
 .env

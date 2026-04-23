@@ -46,6 +46,11 @@ LOG_DIR     = os.environ.get("SOVEREIGN_LOG_DIR")     or os.path.join(BASE_DIR, 
 AUDIT_LOG   = os.path.join(LOG_DIR, "sovereign_audit_log.json")
 DB_PATH     = os.environ.get("SOVEREIGN_DB_PATH")     or os.path.join(LOG_DIR, "sovereign_projects.db")
 
+# ── PostgreSQL + Qdrant ───────────────────────────────────────────────────────
+DATABASE_URL   = os.environ.get("DATABASE_URL",   "postgresql://sovereign:sovereign@localhost:5432/sovereign")
+QDRANT_URL     = os.environ.get("QDRANT_URL",     "http://localhost:6333")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+
 CHUNK_SIZE    = 512
 CHUNK_OVERLAP = 50
 

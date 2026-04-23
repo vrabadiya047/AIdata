@@ -10,10 +10,12 @@ import asyncio
 import os
 import io
 import re
-import shutil
-
-from src.engine import get_query_engine
+from src.engine import (
+    get_query_engine,
+    index_file, remove_file_from_index, rename_project_index, delete_project_index,
+)
 from src.database import (
+    init_db,
     get_all_projects, get_chat_history, save_chat_message,
     add_custom_project, delete_project_data, get_project_threads,
     save_file_project, delete_file_metadata,
@@ -30,7 +32,7 @@ from src.privacy import shield
 from src.logger import log_query
 from src.auth import verify_user, add_user, delete_user, get_all_users, update_user_password, check_and_create_default_admin
 from src.analytics import get_audit_trail
-from src.config import DATA_DIR, STORAGE_DIR, LOG_DIR
+from src.config import DATA_DIR, LOG_DIR
 
 _DEFAULT_SECRET = "sovereign-dev-secret-2026-change-in-prod"
 JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", _DEFAULT_SECRET)
@@ -47,6 +49,7 @@ async def lifespan(_: FastAPI):
             "   Set SOVEREIGN_JWT_SECRET env var before production deployment.\n"
             "─────────────────────────────────────────────────────────────\n"
         )
+    init_db()
     check_and_create_default_admin()
     yield
 
@@ -70,15 +73,6 @@ def safe_filename(filename: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid or unsafe filename")
     return name
 
-def invalidate_project_index(username: str, project: str):
-    """Deletes the cached vector index so it is rebuilt on the next query."""
-    storage_path = os.path.join(STORAGE_DIR, username, project)
-    if os.path.exists(storage_path):
-        shutil.rmtree(storage_path)
-    # Also clear the all-projects aggregate index so stale data doesn't linger
-    all_idx = os.path.join(STORAGE_DIR, username, "all_projects")
-    if os.path.exists(all_idx):
-        shutil.rmtree(all_idx)
 
 
 # ─── Auth helpers ────────────────────────────────────────────────────────────
@@ -182,8 +176,9 @@ async def create_project(data: ProjectRequest, user: dict = Depends(get_current_
     return {"status": "created", "name": data.name}
 
 @app.delete("/api/projects/{name}")
-async def delete_project(name: str, user: dict = Depends(get_current_user)):
+async def delete_project(name: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     handle_delete_project(name, user["username"])
+    background_tasks.add_task(delete_project_index, user["username"], name)
     return {"status": "deleted"}
 
 class RenameProjectRequest(BaseModel):
@@ -199,8 +194,7 @@ async def rename_project_endpoint(name: str, data: RenameProjectRequest, user: d
     new_data = os.path.join(DATA_DIR, username, new_name)
     if os.path.exists(old_data):
         os.rename(old_data, new_data)
-    # Wipe both the per-project and the all-projects aggregate index
-    invalidate_project_index(username, name)
+    rename_project_index(username, name, new_name)
     rename_project(name, new_name, username)
     return {"status": "renamed", "name": new_name}
 
@@ -285,6 +279,7 @@ async def remove_member(name: str, member: str, user: dict = Depends(get_current
 
 @app.post("/api/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project: str = Form(...),
     user: dict = Depends(get_current_user),
@@ -299,14 +294,14 @@ async def upload_file(
     await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
     save_file_project(clean_name, project, username)
-    invalidate_project_index(username, project)
+    background_tasks.add_task(index_file, file_path, username, project)
 
     return {"status": "uploaded", "file": clean_name}
 
 @app.delete("/api/files/{filename}")
-async def delete_file(filename: str, project: str, user: dict = Depends(get_current_user)):
+async def delete_file(filename: str, project: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     handle_delete_file(project, filename, user["username"])
-    invalidate_project_index(user["username"], project)
+    background_tasks.add_task(remove_file_from_index, filename, user["username"], project)
     return {"status": "deleted"}
 
 @app.get("/api/files")

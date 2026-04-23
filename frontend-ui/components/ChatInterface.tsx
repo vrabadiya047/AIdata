@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, Shield, Lock, ChevronRight, Cpu, Layers } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, BookOpen, Shield, Lock, ChevronRight, Cpu, Layers } from "lucide-react";
 import { getThreadHistory } from "@/app/actions";
 
 interface AttachedFile {
@@ -11,10 +11,16 @@ interface AttachedFile {
   preview?: string;
 }
 
+interface Source {
+  file: string;
+  score: number;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
   attachments?: { name: string; preview?: string; isImage: boolean }[];
+  sources?: Source[];
 }
 
 interface ChatInterfaceProps {
@@ -94,8 +100,41 @@ function UserMessage({ content, attachments }: {
   );
 }
 
-function AIMessage({ content, thinking, streaming }: {
-  content: string; thinking?: boolean; streaming?: boolean;
+function SourcesRow({ sources }: { sources: Source[] }) {
+  return (
+    <div className="fade-up" style={{ marginBottom: "10px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+        <BookOpen size={10} style={{ color: "var(--t3)" }} />
+        <span className="font-mono" style={{ fontSize: "9px", letterSpacing: "0.14em", color: "var(--t3)", textTransform: "uppercase" }}>
+          Sources
+        </span>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
+        {sources.map((s, i) => (
+          <div key={i} style={{
+            display: "flex", alignItems: "center", gap: "5px",
+            padding: "3px 8px", borderRadius: "6px",
+            background: "var(--raised)", border: "1px solid var(--b1)",
+            fontSize: "11px", color: "var(--t2)",
+          }}>
+            <FileText size={10} style={{ color: "var(--amber)", flexShrink: 0 }} />
+            <span style={{ maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {s.file}
+            </span>
+            {s.score > 0 && (
+              <span className="font-mono" style={{ fontSize: "9px", color: "var(--t3)", flexShrink: 0 }}>
+                {Math.round(s.score * 100)}%
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AIMessage({ content, thinking, streaming, sources }: {
+  content: string; thinking?: boolean; streaming?: boolean; sources?: Source[];
 }) {
   return (
     <div className="fade-up" style={{ display: "flex", gap: "14px", alignItems: "flex-start", paddingRight: "12%" }}>
@@ -110,7 +149,10 @@ function AIMessage({ content, thinking, streaming }: {
         <Shield size={14} style={{ color: "var(--amber)" }} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        {thinking ? (
+        {/* Sources — shown as soon as they arrive, before text */}
+        {sources && sources.length > 0 && <SourcesRow sources={sources} />}
+
+        {thinking && !content ? (
           <>
             <ThinkingDots />
             <div style={{
@@ -436,13 +478,21 @@ export default function ChatInterface({ activeProject, activeThread, username, o
             const data = line.slice(6);
             if (data === "[DONE]") break;
             try {
-              const { token } = JSON.parse(data);
-              accumulated += token;
-              setMessages(prev => {
-                const next = [...prev];
-                next[next.length - 1] = { role: "assistant", content: accumulated };
-                return next;
-              });
+              const parsed = JSON.parse(data);
+              if (parsed.sources) {
+                setMessages(prev => {
+                  const next = [...prev];
+                  next[next.length - 1] = { ...next[next.length - 1], sources: parsed.sources };
+                  return next;
+                });
+              } else if (parsed.token !== undefined) {
+                accumulated += parsed.token;
+                setMessages(prev => {
+                  const next = [...prev];
+                  next[next.length - 1] = { ...next[next.length - 1], content: accumulated };
+                  return next;
+                });
+              }
             } catch (_) {}
           }
         }
@@ -539,6 +589,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                 <AIMessage key={i} content={msg.content}
                   thinking={isLoading && i === messages.length - 1 && !msg.content}
                   streaming={isLoading && i === messages.length - 1 && !!msg.content}
+                  sources={msg.sources}
                 />
               )
             )}

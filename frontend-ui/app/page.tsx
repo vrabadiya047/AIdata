@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Sidebar from '@/components/Sidebar';
 import ChatInterface from '@/components/ChatInterface';
 import DocumentPanel from '@/components/DocumentPanel';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import { useSession } from '@/contexts/SessionContext';
 
 export default function Home() {
@@ -23,13 +24,15 @@ export default function Home() {
         overflow: 'hidden',
       }}
     >
-      <Sidebar
-        activeProject={activeProject}
-        activeThread={activeThread}
-        onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); }}
-        onSelectThread={setActiveThread}
-        onOpenDocs={() => setShowDocs(true)}
-      />
+      <ErrorBoundary name="Sidebar">
+        <Sidebar
+          activeProject={activeProject}
+          activeThread={activeThread}
+          onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); }}
+          onSelectThread={setActiveThread}
+          onOpenDocs={() => setShowDocs(true)}
+        />
+      </ErrorBoundary>
 
       <main
         style={{
@@ -54,19 +57,23 @@ export default function Home() {
           pointerEvents: 'none', zIndex: 0,
         }} />
 
-        <ChatInterface
-          activeProject={activeProject}
-          activeThread={activeThread}
-          username={session?.username ?? ''}
-          onNewThread={(t) => setActiveThread(t)}
-        />
+        <ErrorBoundary name="Chat">
+          <ChatInterface
+            activeProject={activeProject}
+            activeThread={activeThread}
+            username={session?.username ?? ''}
+            onNewThread={(t) => setActiveThread(t)}
+          />
+        </ErrorBoundary>
       </main>
 
       {showDocs && (
-        <DocumentPanel
-          activeProject={activeProject}
-          onClose={() => setShowDocs(false)}
-        />
+        <ErrorBoundary name="Documents" inline>
+          <DocumentPanel
+            activeProject={activeProject}
+            onClose={() => setShowDocs(false)}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

@@ -422,6 +422,28 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
 
     async def generate_tokens():
         full_response = ""
+
+        # Emit source citations before any tokens so the UI can show them immediately
+        if hasattr(response, 'source_nodes') and response.source_nodes:
+            sources = []
+            seen: set[str] = set()
+            for sn in response.source_nodes:
+                meta = getattr(sn.node, 'metadata', {}) or {}
+                fname = (
+                    meta.get("file_name") or
+                    meta.get("filename") or
+                    (meta.get("file_path", "").replace("\\", "/").split("/")[-1]) or
+                    "Unknown"
+                )
+                if fname and fname not in seen:
+                    seen.add(fname)
+                    sources.append({
+                        "file": fname,
+                        "score": round(float(sn.score or 0), 3),
+                    })
+            if sources:
+                yield f"data: {json.dumps({'sources': sources})}\n\n"
+
         if not hasattr(response, 'response_gen') or response.response_gen is None:
             static_text = str(response)
             if not static_text.strip():

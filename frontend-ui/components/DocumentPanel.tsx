@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Upload, FileText, Trash2, RefreshCw, AlertCircle } from "lucide-react";
+import { X, Upload, FileText, Image, Trash2, RefreshCw, AlertCircle } from "lucide-react";
+
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".gif", ".webp"]);
+
+function fileIcon(name: string) {
+  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+  return IMAGE_EXTS.has(ext) ? Image : FileText;
+}
 
 interface DocumentPanelProps {
   activeProject: string;
@@ -117,9 +124,16 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
               {uploading ? "Uploading..." : "Drop files here or click to browse"}
             </div>
             <div className="font-mono" style={{ fontSize: "10px", color: "var(--t3)", letterSpacing: "0.06em" }}>
-              PDF, TXT, CSV, DOCX SUPPORTED
+              PDF · TXT · CSV · DOCX · PNG · JPG · TIFF
             </div>
-            <input ref={inputRef} type="file" multiple style={{ display: "none" }} onChange={(e) => e.target.files && uploadFiles(e.target.files)} />
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              accept=".pdf,.txt,.csv,.docx,.doc,.png,.jpg,.jpeg,.bmp,.tiff,.tif,.gif,.webp"
+              style={{ display: "none" }}
+              onChange={(e) => e.target.files && uploadFiles(e.target.files)}
+            />
           </div>
 
           {/* Index status */}
@@ -154,24 +168,27 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
                 INDEXED FILES — {files.length}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                {files.map((f) => (
-                  <div key={f} style={{
-                    display: "flex", alignItems: "center", gap: "10px",
-                    padding: "10px 12px", borderRadius: "8px",
-                    background: "var(--raised)", border: "1px solid var(--b1)",
-                  }}>
-                    <FileText size={13} style={{ color: "var(--amber)", flexShrink: 0 }} />
-                    <span style={{ flex: 1, fontSize: "13px", color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {f}
-                    </span>
-                    <button
-                      onClick={() => deleteFile(f)}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)", padding: "2px", borderRadius: "4px" }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))}
+                {files.map((f) => {
+                  const Icon = fileIcon(f);
+                  return (
+                    <div key={f} style={{
+                      display: "flex", alignItems: "center", gap: "10px",
+                      padding: "10px 12px", borderRadius: "8px",
+                      background: "var(--raised)", border: "1px solid var(--b1)",
+                    }}>
+                      <Icon size={13} style={{ color: "var(--amber)", flexShrink: 0 }} />
+                      <span style={{ flex: 1, fontSize: "13px", color: "var(--t1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {f}
+                      </span>
+                      <button
+                        onClick={() => deleteFile(f)}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)", padding: "2px", borderRadius: "4px" }}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

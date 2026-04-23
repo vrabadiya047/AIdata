@@ -39,12 +39,12 @@ from llama_index.core import Settings
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR   = os.path.join(BASE_DIR, "data")
-STORAGE_DIR = os.path.join(BASE_DIR, "storage")
-LOG_DIR    = os.path.join(BASE_DIR, "logs")
-AUDIT_LOG  = os.path.join(LOG_DIR, "sovereign_audit_log.json")
-DB_PATH    = os.path.join(LOG_DIR, "sovereign_projects.db")
+BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR    = os.environ.get("SOVEREIGN_DATA_DIR")    or os.path.join(BASE_DIR, "data")
+STORAGE_DIR = os.environ.get("SOVEREIGN_STORAGE_DIR") or os.path.join(BASE_DIR, "storage")
+LOG_DIR     = os.environ.get("SOVEREIGN_LOG_DIR")     or os.path.join(BASE_DIR, "logs")
+AUDIT_LOG   = os.path.join(LOG_DIR, "sovereign_audit_log.json")
+DB_PATH     = os.environ.get("SOVEREIGN_DB_PATH")     or os.path.join(LOG_DIR, "sovereign_projects.db")
 
 CHUNK_SIZE    = 512
 CHUNK_OVERLAP = 50

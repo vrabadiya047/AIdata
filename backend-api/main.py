@@ -10,6 +10,7 @@ import asyncio
 import os
 import io
 import re
+import uuid
 from src.engine import (
     get_query_engine,
     index_file, remove_file_from_index, rename_project_index, delete_project_index,
@@ -24,6 +25,7 @@ from src.database import (
     create_group, delete_group, add_group_member, remove_group_member, get_user_groups,
     rename_project, rename_thread, delete_thread,
     get_project_owner, get_user_permissions, update_share_permissions,
+    create_snapshot, get_snapshot, list_user_snapshots, delete_snapshot,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
@@ -379,6 +381,44 @@ async def get_history(project: str, username: str, thread_id: str = "General", u
             return {"history": []}
     history = get_chat_history(project, owner, thread_id)
     return {"history": history}
+
+
+# ─── Snapshots ────────────────────────────────────────────────────────────────
+
+class CreateSnapshotRequest(BaseModel):
+    project: str
+    thread_id: str
+    title: str = ""
+
+@app.post("/api/snapshots")
+async def create_snapshot_endpoint(data: CreateSnapshotRequest, user: dict = Depends(get_current_user)):
+    owner = get_project_owner(data.project, user["username"])
+    perms = get_user_permissions(data.project, owner, user["username"])
+    if owner != user["username"] and "chats" not in perms:
+        raise HTTPException(status_code=403, detail="No access to this thread")
+    messages = get_chat_history(data.project, owner, data.thread_id)
+    files = list_files_in_project(data.project, owner)
+    snap_id = str(uuid.uuid4())
+    title = data.title.strip() or data.thread_id
+    create_snapshot(snap_id, data.project, owner, data.thread_id, title, user["username"], messages, files)
+    return {"id": snap_id}
+
+@app.get("/api/snapshots")
+async def list_snapshots_endpoint(user: dict = Depends(get_current_user)):
+    snaps = list_user_snapshots(user["username"])
+    return {"snapshots": snaps}
+
+@app.get("/api/snapshots/{snap_id}")
+async def get_snapshot_endpoint(snap_id: str):
+    snap = get_snapshot(snap_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return snap
+
+@app.delete("/api/snapshots/{snap_id}")
+async def delete_snapshot_endpoint(snap_id: str, user: dict = Depends(get_current_user)):
+    delete_snapshot(snap_id, user["username"])
+    return {"status": "deleted"}
 
 
 # ─── Admin ────────────────────────────────────────────────────────────────────

@@ -5,12 +5,13 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight,
   Terminal, Archive, Zap, LogOut, Trash2,
-  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X,
+  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera,
 } from "lucide-react";
 import { useSession } from "@/contexts/SessionContext";
 import { getWorkspaces, getProjectThreads } from "@/app/actions";
 import { Workspace } from "@/types/sovereign";
 import ShareModal from "@/components/ShareModal";
+import SnapshotModal from "@/components/SnapshotModal";
 import ThemeToggle from "@/components/ThemeToggle";
 import QueryLogPanel from "@/components/QueryLogPanel";
 
@@ -187,6 +188,7 @@ export default function Sidebar({
 
   const [shareTarget, setShareTarget] = useState<Workspace | null>(null);
   const [showQueryLog, setShowQueryLog] = useState(false);
+  const [snapshotThread, setSnapshotThread] = useState<string | null>(null);
 
   const username = session?.username ?? "";
 
@@ -680,6 +682,7 @@ export default function Sidebar({
                             onClose={() => setThreadMenu(null)}
                             items={[
                               { label: "Rename", icon: <Pencil size={11} />, onClick: () => setRenamingThread({ id: t, value: t }) },
+                              { label: "Snapshot", icon: <Camera size={11} />, onClick: () => { setSnapshotThread(t); setThreadMenu(null); } },
                               { label: "Delete", icon: <Trash2 size={11} />, danger: true, onClick: () => deleteThread(t) },
                             ]}
                           />
@@ -751,6 +754,14 @@ export default function Sidebar({
       )}
 
       {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
+
+      {snapshotThread && (
+        <SnapshotModal
+          project={activeProject}
+          threadId={snapshotThread}
+          onClose={() => setSnapshotThread(null)}
+        />
+      )}
     </>
   );
 }

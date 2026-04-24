@@ -90,6 +90,18 @@ def init_db():
             "ON CONFLICT DO NOTHING"
         )
 
+        cur.execute('''CREATE TABLE IF NOT EXISTS snapshots (
+            id          TEXT PRIMARY KEY,
+            project_name  TEXT NOT NULL,
+            project_owner TEXT NOT NULL,
+            thread_id     TEXT NOT NULL,
+            title         TEXT DEFAULT '',
+            created_by    TEXT NOT NULL,
+            created_at    TIMESTAMP DEFAULT NOW(),
+            messages      JSONB NOT NULL DEFAULT '[]',
+            files         TEXT[] NOT NULL DEFAULT '{}'
+        )''')
+
         # Safe idempotent column migrations
         for sql in [
             "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS thread_id TEXT DEFAULT 'General'",
@@ -445,6 +457,56 @@ def get_index_signal():
         cur.execute("SELECT value FROM system_state WHERE key = 'last_index_update'")
         row = cur.fetchone()
         return row[0] if row else '0'
+
+# ─── Snapshots ───────────────────────────────────────────────────────────────
+
+import json as _json
+
+def create_snapshot(snap_id, project_name, project_owner, thread_id, title, created_by, messages, files):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO snapshots (id, project_name, project_owner, thread_id, title, created_by, messages, files) '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s)',
+            (snap_id, project_name, project_owner, thread_id, title, created_by,
+             _json.dumps(messages), list(files)),
+        )
+
+def get_snapshot(snap_id):
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT id, project_name, project_owner, thread_id, title, created_by, created_at, messages, files FROM snapshots WHERE id = %s', (snap_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "project_name": row[1], "project_owner": row[2],
+            "thread_id": row[3], "title": row[4], "created_by": row[5],
+            "created_at": row[6].isoformat() if row[6] else None,
+            "messages": row[7] if isinstance(row[7], list) else _json.loads(row[7] or "[]"),
+            "files": list(row[8] or []),
+        }
+
+def list_user_snapshots(username):
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, project_name, thread_id, title, created_at, files '
+            'FROM snapshots WHERE created_by = %s ORDER BY created_at DESC',
+            (username,),
+        )
+        return [
+            {"id": r[0], "project_name": r[1], "thread_id": r[2], "title": r[3],
+             "created_at": r[4].isoformat() if r[4] else None, "files": list(r[5] or [])}
+            for r in cur.fetchall()
+        ]
+
+def delete_snapshot(snap_id, username):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM snapshots WHERE id = %s AND created_by = %s',
+            (snap_id, username),
+        )
+
 
 def nuke_database():
     with _conn() as conn:

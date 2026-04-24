@@ -505,7 +505,7 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
         # Emit source citations before any tokens so the UI can show them immediately
         if hasattr(response, 'source_nodes') and response.source_nodes:
             sources = []
-            seen: set[str] = set()
+            seen: set[tuple] = set()
             for sn in response.source_nodes:
                 meta = getattr(sn.node, 'metadata', {}) or {}
                 fname = (
@@ -514,11 +514,20 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
                     (meta.get("file_path", "").replace("\\", "/").split("/")[-1]) or
                     "Unknown"
                 )
-                if fname and fname not in seen:
-                    seen.add(fname)
+                raw_page = meta.get("page_label") or meta.get("page")
+                try:
+                    page = int(raw_page) if raw_page is not None else None
+                except (ValueError, TypeError):
+                    page = None
+                key = (fname, page)
+                if fname and key not in seen:
+                    seen.add(key)
+                    text = getattr(sn.node, 'text', '') or ''
                     sources.append({
                         "file": fname,
+                        "page": page,
                         "score": round(float(sn.score or 0), 3),
+                        "excerpt": text[:280].strip(),
                     })
             if sources:
                 yield f"data: {json.dumps({'sources': sources})}\n\n"

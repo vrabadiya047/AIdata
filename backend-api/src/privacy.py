@@ -34,4 +34,30 @@ class PIIShield:
                 "PII redaction failed; query blocked to protect data sovereignty"
             ) from exc
 
+    def redact_and_log(
+        self,
+        text: str,
+        username: str = "",
+        project: str = "",
+        context: str = "query",
+    ) -> str:
+        """Redact PII and persist a count-per-type audit event to the database.
+
+        Logging failures are swallowed so a DB outage never blocks redaction.
+        """
+        if not text:
+            return text
+        try:
+            from src.database import log_redaction_event
+            for label, pattern in self.patterns.items():
+                hits = len(re.findall(pattern, text))
+                if hits:
+                    try:
+                        log_redaction_event(username, label, hits, context, project)
+                    except Exception:
+                        pass  # never let logging failure expose PII
+        except ImportError:
+            pass  # running in an environment without the DB (e.g. tests that don't need it)
+        return self.redact(text)
+
 shield = PIIShield()

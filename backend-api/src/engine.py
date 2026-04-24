@@ -178,7 +178,9 @@ def index_file(file_path: str, username: str, project: str):
     for doc in docs:
         doc.metadata["project_name"] = project
         doc.metadata["username"]     = username
-        doc.set_content(shield.redact(doc.get_content()))
+        doc.set_content(shield.redact_and_log(
+            doc.get_content(), username=username, project=project, context="document"
+        ))
 
     if docs:
         VectorStoreIndex.from_documents(docs, storage_context=sc, show_progress=False)

@@ -94,6 +94,8 @@ def init_db():
         for sql in [
             "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS thread_id TEXT DEFAULT 'General'",
             "ALTER TABLE custom_projects ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'private'",
+            "ALTER TABLE project_shares ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT 'documents,chats'",
+            "ALTER TABLE project_group_shares ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT 'documents,chats'",
         ]:
             cur.execute(sql)
 
@@ -173,25 +175,84 @@ def get_all_projects(username):
 
 
 def get_project_owner(project_name, username):
+    """Return the owner of project_name that username has access to."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        # Own project
+        cur.execute("SELECT owner FROM custom_projects WHERE name = %s AND owner = %s", (project_name, username))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        # Public project
+        cur.execute("SELECT owner FROM custom_projects WHERE name = %s AND visibility = 'public'", (project_name,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        # Directly shared with this user
+        cur.execute("""
+            SELECT cp.owner FROM custom_projects cp
+            JOIN project_shares ps ON cp.name = ps.project_name AND cp.owner = ps.project_owner
+            WHERE cp.name = %s AND ps.shared_with = %s
+        """, (project_name, username))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        # Shared via group
+        cur.execute("""
+            SELECT cp.owner FROM custom_projects cp
+            JOIN project_group_shares pgs ON cp.name = pgs.project_name AND cp.owner = pgs.project_owner
+            JOIN group_members gm ON pgs.group_name = gm.group_name AND pgs.group_owner = gm.group_owner
+            WHERE cp.name = %s AND gm.username = %s
+        """, (project_name, username))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        return username  # fallback — own project not yet in DB
+
+
+def get_user_permissions(project_name, project_owner, username):
+    """Return list of permission strings for username on this project."""
+    if project_owner == username:
+        return ["documents", "chats", "upload", "query"]
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT owner FROM custom_projects "
-            "WHERE name = %s AND (owner = %s OR visibility = 'public')",
-            (project_name, username),
+            "SELECT permissions FROM project_shares "
+            "WHERE project_name = %s AND project_owner = %s AND shared_with = %s",
+            (project_name, project_owner, username),
         )
         row = cur.fetchone()
-        return row[0] if row else username
+        if row and row[0]:
+            return [p.strip() for p in row[0].split(",") if p.strip()]
+        # Check group share
+        cur.execute("""
+            SELECT pgs.permissions FROM project_group_shares pgs
+            JOIN group_members gm ON pgs.group_name = gm.group_name AND pgs.group_owner = gm.group_owner
+            WHERE pgs.project_name = %s AND pgs.project_owner = %s AND gm.username = %s
+        """, (project_name, project_owner, username))
+        row = cur.fetchone()
+        if row and row[0]:
+            return [p.strip() for p in row[0].split(",") if p.strip()]
+    return []
 
 
 # ─── Sharing ─────────────────────────────────────────────────────────────────
 
-def share_project_with_user(project_name, project_owner, shared_with):
+def share_project_with_user(project_name, project_owner, shared_with, permissions="documents,chats"):
     with _conn() as conn:
         conn.cursor().execute(
-            'INSERT INTO project_shares (project_name, project_owner, shared_with) '
-            'VALUES (%s, %s, %s) ON CONFLICT DO NOTHING',
-            (project_name, project_owner, shared_with),
+            'INSERT INTO project_shares (project_name, project_owner, shared_with, permissions) '
+            'VALUES (%s, %s, %s, %s) ON CONFLICT (project_name, project_owner, shared_with) '
+            'DO UPDATE SET permissions = EXCLUDED.permissions',
+            (project_name, project_owner, shared_with, permissions),
+        )
+
+def update_share_permissions(project_name, project_owner, shared_with, permissions):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE project_shares SET permissions = %s '
+            'WHERE project_name = %s AND project_owner = %s AND shared_with = %s',
+            (permissions, project_name, project_owner, shared_with),
         )
 
 def unshare_project_from_user(project_name, project_owner, shared_with):
@@ -206,11 +267,17 @@ def get_project_shares(project_name, project_owner):
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            'SELECT shared_with FROM project_shares '
+            'SELECT shared_with, permissions FROM project_shares '
             'WHERE project_name = %s AND project_owner = %s',
             (project_name, project_owner),
         )
-        return [r[0] for r in cur.fetchall()]
+        return [
+            {
+                "username": r[0],
+                "permissions": [p.strip() for p in (r[1] or "documents,chats").split(",") if p.strip()],
+            }
+            for r in cur.fetchall()
+        ]
 
 def share_project_with_group(project_name, project_owner, group_name, group_owner):
     with _conn() as conn:

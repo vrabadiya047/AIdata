@@ -2,6 +2,7 @@
 import os
 import re
 import traceback
+from typing import Optional, Any, List, cast
 
 if os.environ.get("SOVEREIGN_OFFLINE_MODE") == "1":
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -15,7 +16,89 @@ from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.readers.file import PyMuPDFReader
 from llama_index.postprocessor.sbert_rerank import SentenceTransformerRerank
-from llama_index.vector_stores.qdrant import QdrantVectorStore
+from llama_index.vector_stores.qdrant import QdrantVectorStore as _QdrantVectorStore
+from pydantic import BaseModel as _PydanticBaseModel
+import qdrant_client as _qc_module
+
+
+# llama-index-vector-stores-qdrant 0.1.4 (only version installable on Python 3.14)
+# was built for llama-index-core < 0.11, but 0.14.x uses Pydantic v2 strictly.
+# Bug: the original __init__ assigns private attrs BEFORE calling super().__init__(),
+# so Pydantic v2's __pydantic_private__ re-initialization (inside super().__init__)
+# wipes those values. Fix: call Pydantic's BaseModel.__init__ first to set up
+# __pydantic_private__, then assign private attrs safely afterward.
+class QdrantVectorStore(_QdrantVectorStore):
+    path: Optional[str] = None
+
+    def __init__(
+        self,
+        collection_name: str,
+        client: Optional[Any] = None,
+        aclient: Optional[Any] = None,
+        url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        batch_size: int = 64,
+        parallel: int = 1,
+        max_retries: int = 3,
+        client_kwargs: Optional[dict] = None,
+        enable_hybrid: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        if (
+            client is None
+            and aclient is None
+            and (url is None or api_key is None or collection_name is None)
+        ):
+            raise ValueError("Must provide either a QdrantClient instance or a url and api_key.")
+
+        # Step 1: let Pydantic set up __pydantic_private__ by calling BaseModel.__init__.
+        # We skip _QdrantVectorStore.__init__ entirely because it sets private attrs
+        # before super().__init__(), which Pydantic v2 then wipes.
+        _PydanticBaseModel.__init__(
+            self,
+            collection_name=collection_name,
+            path=None,
+            url=url,
+            api_key=api_key,
+            batch_size=batch_size,
+            parallel=parallel,
+            max_retries=max_retries,
+            client_kwargs=client_kwargs or {},
+            enable_hybrid=enable_hybrid,
+        )
+
+        # Step 2: now __pydantic_private__ exists, assign private attrs safely.
+        if client is None and aclient is None:
+            kw = client_kwargs or {}
+            self._client = _qc_module.QdrantClient(url=url, api_key=api_key, **kw)
+            self._aclient = _qc_module.AsyncQdrantClient(url=url, api_key=api_key, **kw)
+        else:
+            self._client = client
+            self._aclient = aclient
+
+        self._collection_initialized = (
+            self._collection_exists(collection_name) if self._client is not None else False
+        )
+
+    def query(self, query: Any, **kwargs: Any) -> Any:
+        # qdrant-client >= 1.14 removed `client.search()`; replaced by `query_points()`.
+        # The parent class (0.1.4) still calls the removed method, so we override it here.
+        query_embedding = cast(List[float], query.query_embedding)
+        qdrant_filters = kwargs.get("qdrant_filters")
+        query_filter = (
+            qdrant_filters if qdrant_filters is not None
+            else self._build_query_filter(query)
+        )
+        response = self._client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            limit=query.similarity_top_k,
+            query_filter=query_filter,
+            with_payload=True,
+        )
+        return self.parse_to_query_result(response.points)
+
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
@@ -64,7 +147,6 @@ def _vector_store(username: str) -> QdrantVectorStore:
     return QdrantVectorStore(
         client=_qdrant_client(),
         collection_name=_collection(username),
-        stores_text=True,   # embeds text in Qdrant payload; no separate docstore needed
     )
 
 

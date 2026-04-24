@@ -30,12 +30,6 @@ interface ChatInterfaceProps {
   onNewThread: (threadId: string) => void;
 }
 
-const SUGGESTIONS = [
-  "Summarise all uploaded documents",
-  "What are the key findings in my files?",
-  "Generate a compliance report",
-  "Compare documents and highlight differences",
-];
 
 function makeThreadName(prompt: string): string {
   const words = prompt.trim().split(/\s+/);
@@ -178,26 +172,7 @@ function AIMessage({ content, thinking, streaming, sources }: {
   );
 }
 
-function SuggestionPill({ text, delay, onClick }: { text: string; delay: number; onClick: () => void }) {
-  const [hov, setHov] = useState(false);
-  return (
-    <button className="fade-up" onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} style={{ animationDelay: `${delay}ms` }}>
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "12px 18px", borderRadius: "12px",
-        background: hov ? "var(--raised)" : "transparent",
-        border: `1px solid ${hov ? "var(--amber-25)" : "var(--b1)"}`,
-        transition: "all 0.18s ease", cursor: "pointer",
-        boxShadow: hov ? "0 2px 12px rgba(245,158,11,0.07)" : "none",
-      }}>
-        <span style={{ fontSize: "13px", color: hov ? "var(--t1)" : "var(--t2)", transition: "color 0.18s", textAlign: "left" }}>{text}</span>
-        <ChevronRight size={13} style={{ color: hov ? "var(--amber)" : "var(--t3)", transition: "color 0.18s", flexShrink: 0, marginLeft: "12px" }} />
-      </div>
-    </button>
-  );
-}
-
-function EmptyState({ project, onSelect }: { project: string; onSelect: (t: string) => void }) {
+function EmptyState({ project }: { project: string }) {
   return (
     <div className="fade-up" style={{
       display: "flex", flexDirection: "column", alignItems: "center",
@@ -232,30 +207,6 @@ function EmptyState({ project, onSelect }: { project: string; onSelect: (t: stri
           ? "Ask anything about your documents. Processing is fully local and private."
           : "Select a workspace from the sidebar to begin your session."}
       </p>
-      <div style={{ display: "flex", gap: "8px", marginBottom: "32px", flexWrap: "wrap", justifyContent: "center" }}>
-        {[
-          { icon: Lock, label: "End-to-end encrypted" },
-          { icon: Cpu, label: "Local inference" },
-          { icon: Shield, label: "Data sovereign" },
-        ].map(({ icon: Icon, label }) => (
-          <div key={label} style={{
-            display: "flex", alignItems: "center", gap: "6px",
-            padding: "6px 13px", borderRadius: "20px",
-            background: "var(--raised)", border: "1px solid var(--b2)",
-            fontSize: "12px", color: "var(--t2)",
-          }}>
-            <Icon size={11} style={{ color: "var(--t3)" }} />
-            {label}
-          </div>
-        ))}
-      </div>
-      {project && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "7px", width: "100%" }}>
-          {SUGGESTIONS.map((s, i) => (
-            <SuggestionPill key={i} text={s} delay={i * 45} onClick={() => onSelect(s)} />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -425,8 +376,10 @@ export default function ChatInterface({ activeProject, activeThread, username, o
     const filesToUpload = [...attachedFiles];
     let threadId = currentThread;
 
-    if (messages.length === 0 && threadId === "General") {
-      threadId = makeThreadName(prompt || filesToUpload[0].name);
+    const isFirstMessage = messages.length === 0 && (threadId === "General" || /^Thread-\d+$/.test(threadId));
+    const rawPrompt = prompt; // capture before any mutation
+    if (isFirstMessage) {
+      threadId = makeThreadName(prompt || filesToUpload[0]?.name || "New Chat");
       setCurrentThread(threadId);
       onNewThread(threadId);
     }
@@ -448,22 +401,70 @@ export default function ChatInterface({ activeProject, activeThread, username, o
     const timeoutId = setTimeout(() => abortRef.current?.abort(), 180_000);
 
     try {
-      // Upload attached files first
-      for (const af of filesToUpload) {
+      // If the user attached images in the chat, send them to the vision endpoint
+      // directly instead of indexing + RAG (which can't describe images).
+      const imageFiles = filesToUpload.filter(f => f.isImage);
+      const docFiles   = filesToUpload.filter(f => !f.isImage);
+
+      // Upload non-image files to the workspace index as usual
+      for (const af of docFiles) {
         const fd = new FormData();
         fd.append("file", af.file);
         fd.append("project", activeProject);
         await fetch("/api/upload", { method: "POST", body: fd });
       }
 
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: prompt || `Describe the attached file(s): ${filesToUpload.map(f => f.name).join(", ")}`, project: activeProject, username, thread_id: threadId }),
-        signal: abortRef.current.signal,
-      });
+      let response: Response;
+
+      if (imageFiles.length > 0) {
+        // Vision path: send the first image + prompt to the vision model
+        const firstImage = imageFiles[0];
+        const imageBase64: string = firstImage.preview ?? await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(firstImage.file);
+        });
+        const visionPrompt = prompt || `Describe this image in detail.`;
+        response = await fetch("/api/vision", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image_base64: imageBase64, prompt: visionPrompt, project: activeProject, username, thread_id: threadId }),
+          signal: abortRef.current.signal,
+        });
+      } else {
+        // RAG path: text-only query against indexed documents
+        response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: prompt || `Describe the attached file(s): ${docFiles.map(f => f.name).join(", ")}`, project: activeProject, username, thread_id: threadId }),
+          signal: abortRef.current.signal,
+        });
+      }
 
       if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+      // Fire AI title generation in the background — doesn't block streaming.
+      if (isFirstMessage && rawPrompt) {
+        const placeholderThread = threadId;
+        fetch("/api/title", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: rawPrompt }),
+        })
+          .then(r => r.json())
+          .then(({ title }: { title: string }) => {
+            if (!title || title === placeholderThread) return;
+            return fetch("/api/threads", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ project: activeProject, old_id: placeholderThread, new_id: title }),
+            }).then(() => {
+              setCurrentThread(title);
+              onNewThread(title);
+            });
+          })
+          .catch(() => {}); // title generation is best-effort
+      }
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -575,7 +576,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       {/* ── Messages ───────────────────────────────────────────────────────── */}
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column" }}>
         {!hasMessages ? (
-          <EmptyState project={activeProject} onSelect={t => setInput(t)} />
+          <EmptyState project={activeProject} />
         ) : (
           <div style={{
             maxWidth: "780px", width: "100%", margin: "0 auto",

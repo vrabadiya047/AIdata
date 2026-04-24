@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { X, Upload, FileText, Image, Trash2, RefreshCw, AlertCircle } from "lucide-react";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".gif", ".webp"]);
@@ -21,7 +21,9 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   const [indexing, setIndexing] = useState(false);
+  const [pendingJobs, setPendingJobs] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function loadFiles() {
     if (!activeProject) return;
@@ -36,13 +38,47 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
 
   useEffect(() => { loadFiles(); }, [activeProject]);
 
+  const pollJobs = useCallback(async (jobIds: string[]) => {
+    if (jobIds.length === 0) return;
+    try {
+      const statuses = await Promise.all(
+        jobIds.map(id => fetch(`/api/jobs/${id}`).then(r => r.ok ? r.json() : null))
+      );
+      const still = statuses
+        .filter(j => j && (j.status === "pending" || j.status === "running"))
+        .map(j => j!.id);
+      setPendingJobs(still);
+      if (still.length === 0) {
+        setIndexing(false);
+        await loadFiles();
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      }
+    } catch {
+      /* ignore transient errors */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (pendingJobs.length > 0 && !pollRef.current) {
+      pollRef.current = setInterval(() => pollJobs(pendingJobs), 2000);
+    }
+    return () => {
+      if (pollRef.current && pendingJobs.length === 0) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [pendingJobs, pollJobs]);
+
   async function uploadFiles(fileList: FileList) {
     if (!fileList.length) return;
     if (!activeProject) { setError("Please select a workspace first."); return; }
     setUploading(true);
     setError("");
     setIndexing(false);
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
 
+    const jobIds: string[] = [];
     for (const file of Array.from(fileList)) {
       const fd = new FormData();
       fd.append("file", file);
@@ -51,11 +87,16 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
       if (!res.ok) {
         const d = await res.json();
         setError(d.error ?? "Upload failed");
+      } else {
+        const d = await res.json();
+        if (d.job_id) jobIds.push(d.job_id);
       }
     }
     setUploading(false);
-    setIndexing(true);
-    setTimeout(() => setIndexing(false), 3000);
+    if (jobIds.length > 0) {
+      setIndexing(true);
+      setPendingJobs(jobIds);
+    }
     await loadFiles();
   }
 

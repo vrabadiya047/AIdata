@@ -48,6 +48,27 @@ services:
       qdrant:
         condition: service_started
 
+  worker:
+    build: ./backend-api
+    restart: unless-stopped
+    command: python worker.py
+    environment:
+      DATABASE_URL:          postgresql://sovereign:sovereign@postgres:5432/sovereign
+      QDRANT_URL:            http://qdrant:6333
+      SOVEREIGN_DATA_DIR:    /app/data
+      SOVEREIGN_LOG_DIR:     /app/logs
+      SOVEREIGN_STORAGE_DIR: /app/storage
+      WORKER_POLL_INTERVAL:  "2"
+    volumes:
+      - ./backend-api/data:/app/data
+      - ./backend-api/logs:/app/logs
+      - ./backend-api/storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
 volumes:
   postgres_data:
   qdrant_data:

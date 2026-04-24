@@ -26,6 +26,7 @@ from src.database import (
     rename_project, rename_thread, delete_thread,
     get_project_owner, get_user_permissions, update_share_permissions,
     create_snapshot, get_snapshot, list_user_snapshots, delete_snapshot,
+    enqueue_job, get_job, get_project_jobs,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
@@ -293,7 +294,6 @@ async def remove_member(name: str, member: str, user: dict = Depends(get_current
 
 @app.post("/api/upload")
 async def upload_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project: str = Form(...),
     user: dict = Depends(get_current_user),
@@ -308,9 +308,10 @@ async def upload_file(
     await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
     save_file_project(clean_name, project, username)
-    background_tasks.add_task(index_file, file_path, username, project)
+    job_id = str(uuid.uuid4())
+    enqueue_job(job_id, file_path, username, project)
 
-    return {"status": "uploaded", "file": clean_name}
+    return {"status": "uploaded", "file": clean_name, "job_id": job_id}
 
 @app.delete("/api/files/{filename}")
 async def delete_file(filename: str, project: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
@@ -322,6 +323,20 @@ async def delete_file(filename: str, project: str, background_tasks: BackgroundT
 async def list_files(project: str, user: dict = Depends(get_current_user)):
     files = list_files_in_project(project, user["username"])
     return {"files": files}
+
+
+# ─── Indexing Jobs ────────────────────────────────────────────────────────────
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
+    job = get_job(job_id)
+    if job is None or job["username"] != user["username"]:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+@app.get("/api/jobs")
+async def list_jobs(project: str, user: dict = Depends(get_current_user)):
+    return {"jobs": get_project_jobs(project, user["username"])}
 
 
 # ─── Threads ──────────────────────────────────────────────────────────────────

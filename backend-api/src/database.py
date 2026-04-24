@@ -102,6 +102,27 @@ def init_db():
             files         TEXT[] NOT NULL DEFAULT '{}'
         )''')
 
+        cur.execute('''CREATE TABLE IF NOT EXISTS indexing_jobs (
+            id          TEXT PRIMARY KEY,
+            file_path   TEXT NOT NULL,
+            username    TEXT NOT NULL,
+            project     TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            error       TEXT NOT NULL DEFAULT '',
+            created_at  TIMESTAMP DEFAULT NOW(),
+            updated_at  TIMESTAMP DEFAULT NOW()
+        )''')
+
+        cur.execute('''CREATE TABLE IF NOT EXISTS redaction_events (
+            id         SERIAL PRIMARY KEY,
+            username   TEXT NOT NULL DEFAULT '',
+            pii_type   TEXT NOT NULL,
+            count      INTEGER NOT NULL DEFAULT 1,
+            context    TEXT NOT NULL DEFAULT 'query',
+            project    TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )''')
+
         # Safe idempotent column migrations
         for sql in [
             "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS thread_id TEXT DEFAULT 'General'",
@@ -508,6 +529,174 @@ def delete_snapshot(snap_id, username):
         )
 
 
+# ─── Indexing Jobs ───────────────────────────────────────────────────────────
+
+def enqueue_job(job_id: str, file_path: str, username: str, project: str):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO indexing_jobs (id, file_path, username, project, status) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            (job_id, file_path, username, project, 'pending'),
+        )
+
+
+def claim_next_job() -> dict | None:
+    """Atomically claim one pending job. Returns job dict or None."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, file_path, username, project FROM indexing_jobs '
+            'WHERE status = %s ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED',
+            ('pending',),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cur.execute(
+            "UPDATE indexing_jobs SET status = 'running', updated_at = NOW() WHERE id = %s",
+            (row[0],),
+        )
+        return {"id": row[0], "file_path": row[1], "username": row[2], "project": row[3]}
+
+
+def mark_job_done(job_id: str):
+    with _conn() as conn:
+        conn.cursor().execute(
+            "UPDATE indexing_jobs SET status = 'done', updated_at = NOW() WHERE id = %s",
+            (job_id,),
+        )
+
+
+def mark_job_failed(job_id: str, error: str):
+    with _conn() as conn:
+        conn.cursor().execute(
+            "UPDATE indexing_jobs SET status = 'failed', error = %s, updated_at = NOW() WHERE id = %s",
+            (error, job_id),
+        )
+
+
+def get_job(job_id: str) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, file_path, username, project, status, error, created_at, updated_at '
+            'FROM indexing_jobs WHERE id = %s',
+            (job_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0], "file_path": row[1], "username": row[2], "project": row[3],
+            "status": row[4], "error": row[5],
+            "created_at": row[6].isoformat() if row[6] else None,
+            "updated_at": row[7].isoformat() if row[7] else None,
+        }
+
+
+def get_project_jobs(project: str, username: str) -> list:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, file_path, project, status, error, created_at, updated_at '
+            'FROM indexing_jobs WHERE project = %s AND username = %s ORDER BY created_at DESC',
+            (project, username),
+        )
+        return [
+            {
+                "id": r[0], "file_path": r[1], "project": r[2], "status": r[3],
+                "error": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+                "updated_at": r[6].isoformat() if r[6] else None,
+            }
+            for r in cur.fetchall()
+        ]
+
+
+# ─── Privacy / Redaction Audit ───────────────────────────────────────────────
+
+def log_redaction_event(username: str, pii_type: str, count: int, context: str, project: str):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO redaction_events (username, pii_type, count, context, project) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            (username, pii_type, count, context, project),
+        )
+
+
+def get_redaction_stats() -> dict:
+    with _conn() as conn:
+        cur = conn.cursor()
+
+        cur.execute('SELECT COALESCE(SUM(count), 0) FROM redaction_events')
+        total = int(cur.fetchone()[0])
+
+        cur.execute('SELECT COUNT(DISTINCT pii_type) FROM redaction_events')
+        unique_types = int(cur.fetchone()[0])
+
+        cur.execute(
+            "SELECT COUNT(DISTINCT username) FROM redaction_events "
+            "WHERE username != '' AND context = 'query'"
+        )
+        affected_users = int(cur.fetchone()[0])
+
+        cur.execute(
+            "SELECT COUNT(*) FROM redaction_events WHERE context = 'query'"
+        )
+        query_hits = int(cur.fetchone()[0])
+
+        cur.execute(
+            "SELECT COUNT(*) FROM redaction_events WHERE context = 'document'"
+        )
+        document_hits = int(cur.fetchone()[0])
+
+        cur.execute(
+            'SELECT pii_type, SUM(count) AS total FROM redaction_events '
+            'GROUP BY pii_type ORDER BY total DESC'
+        )
+        by_type = [{"pii_type": r[0], "count": int(r[1])} for r in cur.fetchall()]
+
+        cur.execute(
+            "SELECT username, SUM(count) AS total FROM redaction_events "
+            "WHERE username != '' GROUP BY username ORDER BY total DESC LIMIT 20"
+        )
+        by_user = [{"username": r[0], "count": int(r[1])} for r in cur.fetchall()]
+
+        cur.execute(
+            "SELECT DATE(created_at) AS day, SUM(count) AS total FROM redaction_events "
+            "WHERE created_at >= NOW() - INTERVAL '30 days' "
+            "GROUP BY day ORDER BY day ASC"
+        )
+        by_day = [{"date": str(r[0]), "count": int(r[1])} for r in cur.fetchall()]
+
+        cur.execute(
+            'SELECT id, username, pii_type, count, context, project, created_at '
+            'FROM redaction_events ORDER BY created_at DESC LIMIT 100'
+        )
+        recent = [
+            {
+                "id": r[0], "username": r[1], "pii_type": r[2],
+                "count": r[3], "context": r[4], "project": r[5],
+                "created_at": r[6].isoformat() if r[6] else None,
+            }
+            for r in cur.fetchall()
+        ]
+
+    return {
+        "summary": {
+            "total_redactions": total,
+            "unique_pii_types": unique_types,
+            "affected_users": affected_users,
+            "query_hits": query_hits,
+            "document_hits": document_hits,
+        },
+        "by_type": by_type,
+        "by_user": by_user,
+        "by_day": by_day,
+        "recent": recent,
+    }
+
+
 def nuke_database():
     with _conn() as conn:
         cur = conn.cursor()
@@ -516,4 +705,6 @@ def nuke_database():
         cur.execute('DELETE FROM chat_history')
         cur.execute('DELETE FROM project_shares')
         cur.execute('DELETE FROM project_group_shares')
+        cur.execute('DELETE FROM indexing_jobs')
+        cur.execute('DELETE FROM redaction_events')
         cur.execute("UPDATE system_state SET value = '0' WHERE key = 'last_index_update'")

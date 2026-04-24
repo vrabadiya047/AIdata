@@ -17,7 +17,9 @@ interface AttachedFile {
 
 interface Source {
   file: string;
+  page?: number | null;
   score: number;
+  excerpt?: string;
 }
 
 interface Message {
@@ -98,35 +100,98 @@ function UserMessage({ content, attachments }: {
   );
 }
 
-function SourcesRow({ sources }: { sources: Source[] }) {
+function CitationChip({ source, index, open, onToggle }: {
+  source: Source; index: number; open: boolean; onToggle: () => void;
+}) {
+  const [hov, setHov] = useState(false);
+  const label = source.page != null ? `p.${source.page}` : null;
   return (
-    <div className="fade-up" style={{ marginBottom: "10px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+    <button
+      onClick={onToggle}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: "5px",
+        padding: "3px 9px 3px 6px", borderRadius: "6px", cursor: "pointer",
+        background: open ? "rgba(245,158,11,0.10)" : hov ? "var(--hover-bg)" : "var(--raised)",
+        border: `1px solid ${open ? "var(--amber-25)" : "var(--b1)"}`,
+        fontSize: "11px", color: open ? "var(--amber)" : hov ? "var(--t1)" : "var(--t2)",
+        transition: "all 0.15s ease", outline: "none",
+        fontFamily: "inherit",
+      }}
+    >
+      {/* Citation number */}
+      <span className="font-mono" style={{
+        fontSize: "9px", background: open ? "var(--amber)" : "var(--b2)",
+        color: open ? "var(--void)" : "var(--t3)",
+        borderRadius: "3px", padding: "1px 4px", fontWeight: 700, flexShrink: 0,
+        transition: "all 0.15s ease",
+      }}>{index + 1}</span>
+      <FileText size={10} style={{ color: open ? "var(--amber)" : "var(--t3)", flexShrink: 0 }} />
+      <span style={{ maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {source.file}
+      </span>
+      {label && (
+        <span className="font-mono" style={{
+          fontSize: "9px", color: open ? "var(--amber)" : "var(--t3)",
+          background: "var(--raised)", borderRadius: "3px", padding: "1px 4px",
+          border: "1px solid var(--b1)", flexShrink: 0,
+        }}>{label}</span>
+      )}
+      {source.score > 0 && (
+        <span className="font-mono" style={{ fontSize: "9px", color: "var(--t3)", flexShrink: 0 }}>
+          {Math.round(source.score * 100)}%
+        </span>
+      )}
+    </button>
+  );
+}
+
+function SourcesRow({ sources }: { sources: Source[] }) {
+  const [openIdx, setOpenIdx] = useState<number | null>(null);
+  const toggle = (i: number) => setOpenIdx(prev => prev === i ? null : i);
+  const active = openIdx !== null ? sources[openIdx] : null;
+  return (
+    <div className="fade-up" style={{ marginBottom: "14px" }}>
+      {/* Label row */}
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
         <BookOpen size={10} style={{ color: "var(--t3)" }} />
         <span className="font-mono" style={{ fontSize: "9px", letterSpacing: "0.14em", color: "var(--t3)", textTransform: "uppercase" }}>
-          Sources
+          {sources.length} {sources.length === 1 ? "Source" : "Sources"} — click to preview
         </span>
       </div>
+      {/* Citation chips */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
         {sources.map((s, i) => (
-          <div key={i} style={{
-            display: "flex", alignItems: "center", gap: "5px",
-            padding: "3px 8px", borderRadius: "6px",
-            background: "var(--raised)", border: "1px solid var(--b1)",
-            fontSize: "11px", color: "var(--t2)",
-          }}>
-            <FileText size={10} style={{ color: "var(--amber)", flexShrink: 0 }} />
-            <span style={{ maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {s.file}
-            </span>
-            {s.score > 0 && (
-              <span className="font-mono" style={{ fontSize: "9px", color: "var(--t3)", flexShrink: 0 }}>
-                {Math.round(s.score * 100)}%
-              </span>
-            )}
-          </div>
+          <CitationChip key={i} source={s} index={i} open={openIdx === i} onToggle={() => toggle(i)} />
         ))}
       </div>
+      {/* Excerpt panel */}
+      {active && active.excerpt && (
+        <div style={{
+          marginTop: "8px", padding: "10px 14px", borderRadius: "8px",
+          background: "var(--raised)", border: "1px solid var(--amber-25)",
+          borderLeft: "3px solid var(--amber)",
+          animation: "fade-up 0.15s ease",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+            <FileText size={10} style={{ color: "var(--amber)" }} />
+            <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--t1)" }}>{active.file}</span>
+            {active.page != null && (
+              <span className="font-mono" style={{
+                fontSize: "9px", color: "var(--amber)", background: "rgba(245,158,11,0.08)",
+                padding: "1px 5px", borderRadius: "3px", border: "1px solid var(--amber-25)",
+              }}>page {active.page}</span>
+            )}
+          </div>
+          <p style={{
+            fontSize: "12px", color: "var(--t2)", lineHeight: "1.7", margin: 0,
+            fontStyle: "italic", wordBreak: "break-word",
+          }}>
+            &ldquo;{active.excerpt}&hellip;&rdquo;
+          </p>
+        </div>
+      )}
     </div>
   );
 }

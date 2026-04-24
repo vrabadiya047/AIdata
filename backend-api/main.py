@@ -26,6 +26,8 @@ from src.database import (
     rename_project, rename_thread, delete_thread,
     get_project_owner, get_user_permissions, update_share_permissions,
     create_snapshot, get_snapshot, list_user_snapshots, delete_snapshot,
+    enqueue_job, get_job, get_project_jobs,
+    log_redaction_event, get_redaction_stats,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
@@ -293,7 +295,6 @@ async def remove_member(name: str, member: str, user: dict = Depends(get_current
 
 @app.post("/api/upload")
 async def upload_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project: str = Form(...),
     user: dict = Depends(get_current_user),
@@ -308,9 +309,10 @@ async def upload_file(
     await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
     save_file_project(clean_name, project, username)
-    background_tasks.add_task(index_file, file_path, username, project)
+    job_id = str(uuid.uuid4())
+    enqueue_job(job_id, file_path, username, project)
 
-    return {"status": "uploaded", "file": clean_name}
+    return {"status": "uploaded", "file": clean_name, "job_id": job_id}
 
 @app.delete("/api/files/{filename}")
 async def delete_file(filename: str, project: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
@@ -322,6 +324,20 @@ async def delete_file(filename: str, project: str, background_tasks: BackgroundT
 async def list_files(project: str, user: dict = Depends(get_current_user)):
     files = list_files_in_project(project, user["username"])
     return {"files": files}
+
+
+# ─── Indexing Jobs ────────────────────────────────────────────────────────────
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
+    job = get_job(job_id)
+    if job is None or job["username"] != user["username"]:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+@app.get("/api/jobs")
+async def list_jobs(project: str, user: dict = Depends(get_current_user)):
+    return {"jobs": get_project_jobs(project, user["username"])}
 
 
 # ─── Threads ──────────────────────────────────────────────────────────────────
@@ -454,6 +470,10 @@ async def admin_audit(admin: dict = Depends(require_admin)):
         return {"entries": []}
     return {"entries": df.to_dict(orient="records")}
 
+@app.get("/api/admin/privacy")
+async def admin_privacy(admin: dict = Depends(require_admin)):
+    return get_redaction_stats()
+
 
 # ─── Core RAG query ───────────────────────────────────────────────────────────
 
@@ -465,7 +485,9 @@ class QueryRequest(BaseModel):
 
 @app.post("/api/query")
 async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
-    safe_prompt = shield.redact(data.prompt)
+    safe_prompt = shield.redact_and_log(
+        data.prompt, username=data.username, project=data.project, context="query"
+    )
 
     # Resolve the actual owner so shared users query the owner's indexed data.
     owner = get_project_owner(data.project, data.username)
@@ -490,7 +512,7 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
         # Emit source citations before any tokens so the UI can show them immediately
         if hasattr(response, 'source_nodes') and response.source_nodes:
             sources = []
-            seen: set[str] = set()
+            seen: set[tuple] = set()
             for sn in response.source_nodes:
                 meta = getattr(sn.node, 'metadata', {}) or {}
                 fname = (
@@ -499,11 +521,20 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
                     (meta.get("file_path", "").replace("\\", "/").split("/")[-1]) or
                     "Unknown"
                 )
-                if fname and fname not in seen:
-                    seen.add(fname)
+                raw_page = meta.get("page_label") or meta.get("page")
+                try:
+                    page = int(raw_page) if raw_page is not None else None
+                except (ValueError, TypeError):
+                    page = None
+                key = (fname, page)
+                if fname and key not in seen:
+                    seen.add(key)
+                    text = getattr(sn.node, 'text', '') or ''
                     sources.append({
                         "file": fname,
+                        "page": page,
                         "score": round(float(sn.score or 0), 3),
+                        "excerpt": text[:280].strip(),
                     })
             if sources:
                 yield f"data: {json.dumps({'sources': sources})}\n\n"
@@ -606,7 +637,9 @@ async def vision_query(data: VisionRequest, user: dict = Depends(get_current_use
     if "," in raw_b64:
         raw_b64 = raw_b64.split(",", 1)[1]
 
-    safe_prompt = shield.redact(data.prompt)
+    safe_prompt = shield.redact_and_log(
+        data.prompt, username=data.username, project=data.project, context="query"
+    )
     save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
 
     ollama_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")

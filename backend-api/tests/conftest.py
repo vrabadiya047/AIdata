@@ -102,7 +102,8 @@ def _bootstrap_db():
         cur = conn.cursor()
         cur.execute(
             "TRUNCATE TABLE users, chat_history, file_metadata, custom_projects, "
-            "project_shares, project_group_shares, groups, group_members, snapshots"
+            "project_shares, project_group_shares, groups, group_members, snapshots, "
+            "indexing_jobs, redaction_events"
         )
 
     check_and_create_default_admin()

@@ -91,5 +91,48 @@ def test_non_admin_cannot_list_users(client):
 # ── Change password ───────────────────────────────────────────────────────────
 
 def test_change_password_unauthenticated(client):
+    r = client.post("/api/auth/change-password", json={"new_password": "NewPass1!"})
+    assert r.status_code == 401
+
+
+def test_change_password_success(auth_client):
+    # Create a throwaway user, log in as them, change password, verify new password works
+    from main import app
+    from fastapi.testclient import TestClient
+
+    auth_client.post("/api/admin/users", json={
+        "username": "pwchange_user", "password": "OldPass1!", "role": "User",
+    })
+
+    with TestClient(app, raise_server_exceptions=False) as tmp:
+        tmp.post("/api/auth/login", json={"username": "pwchange_user", "password": "OldPass1!"})
+        r = tmp.post("/api/auth/change-password", json={"new_password": "NewPass2!"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "password updated"
+
+        # New password works
+        r2 = tmp.post("/api/auth/login", json={"username": "pwchange_user", "password": "NewPass2!"})
+        assert r2.status_code == 200
+
+    auth_client.delete("/api/admin/users/pwchange_user")
+
+
+# ── Admin audit ───────────────────────────────────────────────────────────────
+
+def test_admin_audit_authenticated(auth_client):
+    r = auth_client.get("/api/admin/audit")
+    assert r.status_code == 200
+    assert "entries" in r.json()
+    assert isinstance(r.json()["entries"], list)
+
+
+def test_admin_audit_unauthenticated(client):
+    r = client.get("/api/admin/audit")
+    assert r.status_code == 401
+
+
+# ── Change password ───────────────────────────────────────────────────────────
+
+def test_change_password_unauthenticated(client):
     r = client.post("/api/auth/change-password", json={"new_password": "ShouldFail1!"})
     assert r.status_code == 401

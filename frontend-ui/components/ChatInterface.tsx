@@ -3,6 +3,10 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Square, Paperclip, X, FileText, BookOpen, Shield, Lock, ChevronRight, Cpu, Layers } from "lucide-react";
 import { getThreadHistory } from "@/app/actions";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 
 interface AttachedFile {
   file: File;
@@ -127,6 +131,19 @@ function SourcesRow({ sources }: { sources: Source[] }) {
   );
 }
 
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="ai-prose">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function AIMessage({ content, thinking, streaming, sources }: {
   content: string; thinking?: boolean; streaming?: boolean; sources?: Source[];
 }) {
@@ -161,10 +178,9 @@ function AIMessage({ content, thinking, streaming, sources }: {
               fontSize: "9px", letterSpacing: "0.14em", color: "var(--amber)",
               marginBottom: "9px", opacity: 0.6,
             }}>S · AI</div>
-            <div
-              className={streaming ? "typing-stream" : ""}
-              style={{ fontSize: "14px", lineHeight: "1.78", color: "var(--t1)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-            >{content}</div>
+            <div className={streaming ? "typing-stream" : ""}>
+              <MarkdownContent content={content} />
+            </div>
           </>
         )}
       </div>

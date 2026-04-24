@@ -10,10 +10,13 @@ import asyncio
 import os
 import io
 import re
-import shutil
-
-from src.engine import get_query_engine
+import uuid
+from src.engine import (
+    get_query_engine,
+    index_file, remove_file_from_index, rename_project_index, delete_project_index,
+)
 from src.database import (
+    init_db,
     get_all_projects, get_chat_history, save_chat_message,
     add_custom_project, delete_project_data, get_project_threads,
     save_file_project, delete_file_metadata,
@@ -21,6 +24,8 @@ from src.database import (
     get_project_shares, share_project_with_group, unshare_project_from_group,
     create_group, delete_group, add_group_member, remove_group_member, get_user_groups,
     rename_project, rename_thread, delete_thread,
+    get_project_owner, get_user_permissions, update_share_permissions,
+    create_snapshot, get_snapshot, list_user_snapshots, delete_snapshot,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
@@ -30,7 +35,7 @@ from src.privacy import shield
 from src.logger import log_query
 from src.auth import verify_user, add_user, delete_user, get_all_users, update_user_password, check_and_create_default_admin
 from src.analytics import get_audit_trail
-from src.config import DATA_DIR, STORAGE_DIR, LOG_DIR
+from src.config import DATA_DIR, LOG_DIR
 
 _DEFAULT_SECRET = "sovereign-dev-secret-2026-change-in-prod"
 JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", _DEFAULT_SECRET)
@@ -47,6 +52,7 @@ async def lifespan(_: FastAPI):
             "   Set SOVEREIGN_JWT_SECRET env var before production deployment.\n"
             "─────────────────────────────────────────────────────────────\n"
         )
+    init_db()
     check_and_create_default_admin()
     yield
 
@@ -70,15 +76,6 @@ def safe_filename(filename: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid or unsafe filename")
     return name
 
-def invalidate_project_index(username: str, project: str):
-    """Deletes the cached vector index so it is rebuilt on the next query."""
-    storage_path = os.path.join(STORAGE_DIR, username, project)
-    if os.path.exists(storage_path):
-        shutil.rmtree(storage_path)
-    # Also clear the all-projects aggregate index so stale data doesn't linger
-    all_idx = os.path.join(STORAGE_DIR, username, "all_projects")
-    if os.path.exists(all_idx):
-        shutil.rmtree(all_idx)
 
 
 # ─── Auth helpers ────────────────────────────────────────────────────────────
@@ -182,8 +179,9 @@ async def create_project(data: ProjectRequest, user: dict = Depends(get_current_
     return {"status": "created", "name": data.name}
 
 @app.delete("/api/projects/{name}")
-async def delete_project(name: str, user: dict = Depends(get_current_user)):
+async def delete_project(name: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     handle_delete_project(name, user["username"])
+    background_tasks.add_task(delete_project_index, user["username"], name)
     return {"status": "deleted"}
 
 class RenameProjectRequest(BaseModel):
@@ -199,8 +197,7 @@ async def rename_project_endpoint(name: str, data: RenameProjectRequest, user: d
     new_data = os.path.join(DATA_DIR, username, new_name)
     if os.path.exists(old_data):
         os.rename(old_data, new_data)
-    # Wipe both the per-project and the all-projects aggregate index
-    invalidate_project_index(username, name)
+    rename_project_index(username, name, new_name)
     rename_project(name, new_name, username)
     return {"status": "renamed", "name": new_name}
 
@@ -216,10 +213,12 @@ async def update_visibility(name: str, data: VisibilityRequest, user: dict = Dep
 
 class ShareUserRequest(BaseModel):
     shared_with: str
+    permissions: list[str] = ["documents", "chats"]
 
 @app.post("/api/projects/{name}/share")
 async def share_with_user(name: str, data: ShareUserRequest, user: dict = Depends(get_current_user)):
-    share_project_with_user(name, user["username"], data.shared_with)
+    perms_str = ",".join(data.permissions) if data.permissions else "documents,chats"
+    share_project_with_user(name, user["username"], data.shared_with, perms_str)
     return {"status": "shared"}
 
 @app.delete("/api/projects/{name}/share/{target}")
@@ -229,8 +228,17 @@ async def unshare_from_user(name: str, target: str, user: dict = Depends(get_cur
 
 @app.get("/api/projects/{name}/shares")
 async def get_shares(name: str, user: dict = Depends(get_current_user)):
-    users = get_project_shares(name, user["username"])
-    return {"shared_with": users}
+    shares = get_project_shares(name, user["username"])
+    return {"shared_with": shares}
+
+class UpdatePermissionsRequest(BaseModel):
+    permissions: list[str]
+
+@app.put("/api/projects/{name}/share/{target}/permissions")
+async def update_permissions(name: str, target: str, data: UpdatePermissionsRequest, user: dict = Depends(get_current_user)):
+    perms_str = ",".join(data.permissions) if data.permissions else ""
+    update_share_permissions(name, user["username"], target, perms_str)
+    return {"status": "updated"}
 
 class ShareGroupRequest(BaseModel):
     group_name: str
@@ -285,6 +293,7 @@ async def remove_member(name: str, member: str, user: dict = Depends(get_current
 
 @app.post("/api/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project: str = Form(...),
     user: dict = Depends(get_current_user),
@@ -299,14 +308,14 @@ async def upload_file(
     await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
     save_file_project(clean_name, project, username)
-    invalidate_project_index(username, project)
+    background_tasks.add_task(index_file, file_path, username, project)
 
     return {"status": "uploaded", "file": clean_name}
 
 @app.delete("/api/files/{filename}")
-async def delete_file(filename: str, project: str, user: dict = Depends(get_current_user)):
+async def delete_file(filename: str, project: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     handle_delete_file(project, filename, user["username"])
-    invalidate_project_index(user["username"], project)
+    background_tasks.add_task(remove_file_from_index, filename, user["username"], project)
     return {"status": "deleted"}
 
 @app.get("/api/files")
@@ -319,7 +328,12 @@ async def list_files(project: str, user: dict = Depends(get_current_user)):
 
 @app.get("/api/threads")
 async def get_threads(project: str, user: dict = Depends(get_current_user)):
-    threads = get_project_threads(project, user["username"])
+    owner = get_project_owner(project, user["username"])
+    if owner != user["username"]:
+        perms = get_user_permissions(project, owner, user["username"])
+        if "chats" not in perms:
+            return {"threads": []}
+    threads = get_project_threads(project, owner)
     return {"threads": threads}
 
 class RenameThreadRequest(BaseModel):
@@ -360,8 +374,51 @@ async def get_query_log(user: dict = Depends(get_current_user)):
 
 @app.get("/api/history")
 async def get_history(project: str, username: str, thread_id: str = "General", user: dict = Depends(get_current_user)):
-    history = get_chat_history(project, username, thread_id)
+    owner = get_project_owner(project, username)
+    if owner != username:
+        perms = get_user_permissions(project, owner, username)
+        if "chats" not in perms:
+            return {"history": []}
+    history = get_chat_history(project, owner, thread_id)
     return {"history": history}
+
+
+# ─── Snapshots ────────────────────────────────────────────────────────────────
+
+class CreateSnapshotRequest(BaseModel):
+    project: str
+    thread_id: str
+    title: str = ""
+
+@app.post("/api/snapshots")
+async def create_snapshot_endpoint(data: CreateSnapshotRequest, user: dict = Depends(get_current_user)):
+    owner = get_project_owner(data.project, user["username"])
+    perms = get_user_permissions(data.project, owner, user["username"])
+    if owner != user["username"] and "chats" not in perms:
+        raise HTTPException(status_code=403, detail="No access to this thread")
+    messages = get_chat_history(data.project, owner, data.thread_id)
+    files = list_files_in_project(data.project, owner)
+    snap_id = str(uuid.uuid4())
+    title = data.title.strip() or data.thread_id
+    create_snapshot(snap_id, data.project, owner, data.thread_id, title, user["username"], messages, files)
+    return {"id": snap_id}
+
+@app.get("/api/snapshots")
+async def list_snapshots_endpoint(user: dict = Depends(get_current_user)):
+    snaps = list_user_snapshots(user["username"])
+    return {"snapshots": snaps}
+
+@app.get("/api/snapshots/{snap_id}")
+async def get_snapshot_endpoint(snap_id: str):
+    snap = get_snapshot(snap_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return snap
+
+@app.delete("/api/snapshots/{snap_id}")
+async def delete_snapshot_endpoint(snap_id: str, user: dict = Depends(get_current_user)):
+    delete_snapshot(snap_id, user["username"])
+    return {"status": "deleted"}
 
 
 # ─── Admin ────────────────────────────────────────────────────────────────────
@@ -410,8 +467,15 @@ class QueryRequest(BaseModel):
 async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     safe_prompt = shield.redact(data.prompt)
 
+    # Resolve the actual owner so shared users query the owner's indexed data.
+    owner = get_project_owner(data.project, data.username)
+    if owner != data.username:
+        perms = get_user_permissions(data.project, owner, data.username)
+        if "documents" not in perms and "query" not in perms:
+            raise HTTPException(status_code=403, detail="You don't have query permission on this workspace.")
+
     # NOTE: LlamaIndex calls asyncio.get_event_loop() internally — cannot run in to_thread
-    engine = get_query_engine(project_filter=data.project, username=data.username)
+    engine = get_query_engine(project_filter=data.project, username=owner)
 
     if not engine:
         raise HTTPException(status_code=404, detail="Workspace index not found.")
@@ -481,6 +545,110 @@ async def summarize_workspace(data: SummaryRequest, user: dict = Depends(get_cur
         raise HTTPException(status_code=404, detail="Workspace index not found.")
     response = engine.query(data.prompt)
     return {"summary": str(response)}
+
+
+# ─── AI thread title generation ───────────────────────────────────────────────
+
+class TitleRequest(BaseModel):
+    prompt: str
+
+@app.post("/api/title")
+async def generate_title(data: TitleRequest, user: dict = Depends(get_current_user)):
+    import httpx
+    from llama_index.core import Settings
+
+    ollama_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    model = getattr(Settings.llm, "model", "llama3.2:1b")
+
+    payload = {
+        "model": model,
+        "system": (
+            "You are a chat session title generator. "
+            "Given the user's first message, reply with a short title of 3 to 5 words "
+            "that captures the main topic. "
+            "Rules: no quotes, no punctuation at the end, no explanation — title only."
+        ),
+        "prompt": f"User message: {data.prompt[:500]}\n\nTitle:",
+        "stream": False,
+        "options": {"num_predict": 20, "temperature": 0.3},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(f"{ollama_url}/api/generate", json=payload)
+            r.raise_for_status()
+            title = r.json().get("response", "").strip()
+            title = title.strip("\"'`").strip()
+            title = re.sub(r"[.!?,;:]+$", "", title).strip()
+            title = title[:52] if len(title) > 52 else title
+            return {"title": title or "New Chat"}
+    except Exception:
+        return {"title": ""}
+
+
+# ─── Vision query (image → Ollama vision model) ───────────────────────────────
+
+VISION_MODEL = os.environ.get("SOVEREIGN_VISION_MODEL", "llava:7b")
+
+class VisionRequest(BaseModel):
+    image_base64: str   # data:image/...;base64,<data>  or raw base64
+    prompt: str
+    project: str
+    username: str
+    thread_id: str = "General"
+
+@app.post("/api/vision")
+async def vision_query(data: VisionRequest, user: dict = Depends(get_current_user)):
+    import httpx, base64
+
+    # Strip the data-URL prefix if present
+    raw_b64 = data.image_base64
+    if "," in raw_b64:
+        raw_b64 = raw_b64.split(",", 1)[1]
+
+    safe_prompt = shield.redact(data.prompt)
+    save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
+
+    ollama_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+    # Check model availability
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            tags = await client.get(f"{ollama_url}/api/tags")
+            models = [m["name"] for m in tags.json().get("models", [])]
+    except Exception:
+        models = []
+
+    if not any(VISION_MODEL in m for m in models):
+        msg = (
+            f"No vision model found. Run:  ollama pull {VISION_MODEL}\n\n"
+            f"Available models: {', '.join(models) or 'none'}"
+        )
+        save_chat_message(data.project, data.username, data.thread_id, "assistant", msg)
+        return JSONResponse({"response": msg})
+
+    payload = {
+        "model": VISION_MODEL,
+        "prompt": safe_prompt,
+        "images": [raw_b64],
+        "stream": False,
+    }
+
+    async def generate():
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                r = await client.post(f"{ollama_url}/api/generate", json=payload)
+                r.raise_for_status()
+                text = r.json().get("response", "").strip()
+                if not text:
+                    text = "The vision model returned an empty response."
+        except Exception as e:
+            text = f"Vision model error: {e}"
+        save_chat_message(data.project, data.username, data.thread_id, "assistant", text)
+        yield f"data: {json.dumps({'token': text})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":

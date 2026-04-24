@@ -111,11 +111,11 @@ def test_share_and_unshare():
     add_custom_project("SharedProj", "sowner")
     share_project_with_user("SharedProj", "sowner", "recip1")
     shares = get_project_shares("SharedProj", "sowner")
-    assert "recip1" in shares
+    assert any(s["username"] == "recip1" for s in shares)
 
     unshare_project_from_user("SharedProj", "sowner", "recip1")
     shares = get_project_shares("SharedProj", "sowner")
-    assert "recip1" not in shares
+    assert not any(s["username"] == "recip1" for s in shares)
 
 
 def test_no_shares_by_default():

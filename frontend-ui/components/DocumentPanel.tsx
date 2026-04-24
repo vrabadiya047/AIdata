@@ -119,11 +119,11 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
               transition: "all 0.2s ease",
             }}
           >
-            <Upload size={24} style={{ color: dragging ? "var(--amber)" : "var(--t3)", margin: "0 auto 12px", display: "block" }} />
-            <div style={{ fontSize: "14px", color: "var(--t2)", marginBottom: "4px" }}>
+            <Upload size={24} style={{ color: dragging ? "var(--amber)" : "var(--t2)", margin: "0 auto 12px", display: "block" }} />
+            <div style={{ fontSize: "14px", color: "var(--t1)", marginBottom: "4px" }}>
               {uploading ? "Uploading..." : "Drop files here or click to browse"}
             </div>
-            <div className="font-mono" style={{ fontSize: "10px", color: "var(--t3)", letterSpacing: "0.06em" }}>
+            <div className="font-mono" style={{ fontSize: "10px", color: "var(--t2)", letterSpacing: "0.06em" }}>
               PDF · TXT · CSV · DOCX · PNG · JPG · TIFF
             </div>
             <input
@@ -164,7 +164,7 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
           {/* File list */}
           {files.length > 0 && (
             <div>
-              <div className="font-mono" style={{ fontSize: "9px", color: "var(--t3)", letterSpacing: "0.12em", marginBottom: "10px" }}>
+              <div className="font-mono" style={{ fontSize: "9px", color: "var(--t2)", letterSpacing: "0.12em", marginBottom: "10px" }}>
                 INDEXED FILES — {files.length}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
@@ -195,7 +195,7 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
 
           {files.length === 0 && !uploading && (
             <div style={{ textAlign: "center", padding: "24px 0" }}>
-              <div style={{ fontSize: "13px", color: "var(--t3)" }}>No documents indexed yet.</div>
+              <div style={{ fontSize: "13px", color: "var(--t2)" }}>No documents indexed yet.</div>
             </div>
           )}
         </div>

@@ -1,0 +1,53 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       sovereign
+      POSTGRES_USER:     sovereign
+      POSTGRES_PASSWORD: sovereign
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sovereign"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # REST / gRPC
+      - "6334:6334"   # gRPC (internal)
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    build: ./backend-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL:          postgresql://sovereign:sovereign@postgres:5432/sovereign
+      QDRANT_URL:            http://qdrant:6333
+      SOVEREIGN_JWT_SECRET:  change-this-in-production
+      SOVEREIGN_DATA_DIR:    /app/data
+      SOVEREIGN_LOG_DIR:     /app/logs
+      SOVEREIGN_STORAGE_DIR: /app/storage
+    volumes:
+      - ./backend-api/data:/app/data
+      - ./backend-api/logs:/app/logs
+      - ./backend-api/storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  qdrant_data:

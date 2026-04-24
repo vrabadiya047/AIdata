@@ -1,354 +1,519 @@
 # src/database.py
-import sqlite3
+"""
+Metadata storage — PostgreSQL with a thread-safe connection pool.
+All public function signatures are identical to the previous SQLite version.
+"""
 import os
 import time
-from .config import DB_PATH
+from contextlib import contextmanager
+
+import psycopg2
+from psycopg2 import pool as pg_pool
+
+from .config import DATABASE_URL
+
+_pool: pg_pool.ThreadedConnectionPool | None = None
+
+
+def _get_pool() -> pg_pool.ThreadedConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = pg_pool.ThreadedConnectionPool(minconn=2, maxconn=20, dsn=DATABASE_URL)
+    return _pool
+
+
+@contextmanager
+def _conn():
+    """Yields a pooled connection; commits on success, rolls back on error."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
+
 
 def init_db():
-    with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=10000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        cursor = conn.cursor()
+    with _conn() as conn:
+        cur = conn.cursor()
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS file_metadata (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cur.execute('''CREATE TABLE IF NOT EXISTS file_metadata (
+            id SERIAL PRIMARY KEY,
             file_name TEXT, project_tag TEXT, owner TEXT,
-            upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            upload_date TIMESTAMP DEFAULT NOW()
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_tag TEXT, owner TEXT, thread_id TEXT,
+        cur.execute('''CREATE TABLE IF NOT EXISTS chat_history (
+            id SERIAL PRIMARY KEY,
+            project_tag TEXT, owner TEXT,
+            thread_id TEXT DEFAULT 'General',
             role TEXT, content TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            timestamp TIMESTAMP DEFAULT NOW()
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS custom_projects (
+        cur.execute('''CREATE TABLE IF NOT EXISTS custom_projects (
             name TEXT, owner TEXT,
             visibility TEXT DEFAULT 'private',
             PRIMARY KEY (name, owner)
         )''')
 
-        # Sharing tables
-        cursor.execute('''CREATE TABLE IF NOT EXISTS project_shares (
+        cur.execute('''CREATE TABLE IF NOT EXISTS project_shares (
             project_name TEXT, project_owner TEXT, shared_with TEXT,
             PRIMARY KEY (project_name, project_owner, shared_with)
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS groups (
+        cur.execute('''CREATE TABLE IF NOT EXISTS groups (
             name TEXT, owner TEXT,
             PRIMARY KEY (name, owner)
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS group_members (
+        cur.execute('''CREATE TABLE IF NOT EXISTS group_members (
             group_name TEXT, group_owner TEXT, username TEXT,
             PRIMARY KEY (group_name, group_owner, username)
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS project_group_shares (
+        cur.execute('''CREATE TABLE IF NOT EXISTS project_group_shares (
             project_name TEXT, project_owner TEXT,
             group_name TEXT, group_owner TEXT,
             PRIMARY KEY (project_name, project_owner, group_name, group_owner)
         )''')
 
-        cursor.execute('''CREATE TABLE IF NOT EXISTS system_state (
+        cur.execute('''CREATE TABLE IF NOT EXISTS system_state (
             key TEXT PRIMARY KEY, value TEXT
         )''')
-        cursor.execute("INSERT OR IGNORE INTO system_state (key, value) VALUES ('last_index_update', '0')")
+        cur.execute(
+            "INSERT INTO system_state (key, value) VALUES ('last_index_update', '0') "
+            "ON CONFLICT DO NOTHING"
+        )
 
-        # Safe migrations for existing DBs
-        for migration in [
-            "ALTER TABLE chat_history ADD COLUMN thread_id TEXT DEFAULT 'General'",
-            "ALTER TABLE custom_projects ADD COLUMN visibility TEXT DEFAULT 'private'",
+        cur.execute('''CREATE TABLE IF NOT EXISTS snapshots (
+            id          TEXT PRIMARY KEY,
+            project_name  TEXT NOT NULL,
+            project_owner TEXT NOT NULL,
+            thread_id     TEXT NOT NULL,
+            title         TEXT DEFAULT '',
+            created_by    TEXT NOT NULL,
+            created_at    TIMESTAMP DEFAULT NOW(),
+            messages      JSONB NOT NULL DEFAULT '[]',
+            files         TEXT[] NOT NULL DEFAULT '{}'
+        )''')
+
+        # Safe idempotent column migrations
+        for sql in [
+            "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS thread_id TEXT DEFAULT 'General'",
+            "ALTER TABLE custom_projects ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'private'",
+            "ALTER TABLE project_shares ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT 'documents,chats'",
+            "ALTER TABLE project_group_shares ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT 'documents,chats'",
         ]:
-            try:
-                cursor.execute(migration)
-            except sqlite3.OperationalError:
-                pass
-
-        conn.commit()
+            cur.execute(sql)
 
 
 # ─── Projects ────────────────────────────────────────────────────────────────
 
 def add_custom_project(name, username, visibility='private'):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'INSERT OR IGNORE INTO custom_projects (name, owner, visibility) VALUES (?, ?, ?)',
-            (name, username, visibility)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO custom_projects (name, owner, visibility) VALUES (%s, %s, %s) '
+            'ON CONFLICT DO NOTHING',
+            (name, username, visibility),
         )
 
 def set_project_visibility(name, owner, visibility):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'UPDATE custom_projects SET visibility = ? WHERE name = ? AND owner = ?',
-            (visibility, name, owner)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE custom_projects SET visibility = %s WHERE name = %s AND owner = %s',
+            (visibility, name, owner),
         )
-        conn.commit()
 
 def delete_project_data(name, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute('DELETE FROM custom_projects WHERE name = ? AND owner = ?', (name, username))
-        conn.execute('DELETE FROM file_metadata WHERE project_tag = ? AND owner = ?', (name, username))
-        conn.execute('DELETE FROM chat_history WHERE project_tag = ? AND owner = ?', (name, username))
-        conn.execute('DELETE FROM project_shares WHERE project_name = ? AND project_owner = ?', (name, username))
-        conn.execute('DELETE FROM project_group_shares WHERE project_name = ? AND project_owner = ?', (name, username))
-        conn.commit()
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM custom_projects WHERE name = %s AND owner = %s', (name, username))
+        cur.execute('DELETE FROM file_metadata WHERE project_tag = %s AND owner = %s', (name, username))
+        cur.execute('DELETE FROM chat_history WHERE project_tag = %s AND owner = %s', (name, username))
+        cur.execute('DELETE FROM project_shares WHERE project_name = %s AND project_owner = %s', (name, username))
+        cur.execute('DELETE FROM project_group_shares WHERE project_name = %s AND project_owner = %s', (name, username))
 
 def get_all_projects(username):
-    """Returns all projects accessible to the user with metadata."""
     from .config import DATA_DIR
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
+    with _conn() as conn:
+        cur = conn.cursor()
 
-        # Own projects
-        cursor.execute('SELECT name, owner, visibility FROM custom_projects WHERE owner = ?', (username,))
-        own = [(r[0], r[1], r[2], 'own') for r in cursor.fetchall()]
+        cur.execute('SELECT name, owner, visibility FROM custom_projects WHERE owner = %s', (username,))
+        own = [(r[0], r[1], r[2], 'own') for r in cur.fetchall()]
 
-        # Public projects by others
-        cursor.execute(
-            "SELECT name, owner, visibility FROM custom_projects WHERE visibility = 'public' AND owner != ?",
-            (username,)
+        cur.execute(
+            "SELECT name, owner, visibility FROM custom_projects "
+            "WHERE visibility = 'public' AND owner != %s",
+            (username,),
         )
-        public = [(r[0], r[1], r[2], 'public') for r in cursor.fetchall()]
+        public = [(r[0], r[1], r[2], 'public') for r in cur.fetchall()]
 
-        # Shared directly with user
-        cursor.execute('''
-            SELECT cp.name, cp.owner, cp.visibility FROM custom_projects cp
-            JOIN project_shares ps ON cp.name = ps.project_name AND cp.owner = ps.project_owner
-            WHERE ps.shared_with = ? AND cp.owner != ?
+        cur.execute('''
+            SELECT cp.name, cp.owner, cp.visibility
+            FROM custom_projects cp
+            JOIN project_shares ps
+              ON cp.name = ps.project_name AND cp.owner = ps.project_owner
+            WHERE ps.shared_with = %s AND cp.owner != %s
         ''', (username, username))
-        shared = [(r[0], r[1], r[2], 'shared') for r in cursor.fetchall()]
+        shared = [(r[0], r[1], r[2], 'shared') for r in cur.fetchall()]
 
-        # Shared via group
-        cursor.execute('''
-            SELECT cp.name, cp.owner, cp.visibility FROM custom_projects cp
-            JOIN project_group_shares pgs ON cp.name = pgs.project_name AND cp.owner = pgs.project_owner
-            JOIN group_members gm ON pgs.group_name = gm.group_name AND pgs.group_owner = gm.group_owner
-            WHERE gm.username = ? AND cp.owner != ?
+        cur.execute('''
+            SELECT cp.name, cp.owner, cp.visibility
+            FROM custom_projects cp
+            JOIN project_group_shares pgs
+              ON cp.name = pgs.project_name AND cp.owner = pgs.project_owner
+            JOIN group_members gm
+              ON pgs.group_name = gm.group_name AND pgs.group_owner = gm.group_owner
+            WHERE gm.username = %s AND cp.owner != %s
         ''', (username, username))
-        group_shared = [(r[0], r[1], r[2], 'shared') for r in cursor.fetchall()]
+        group_shared = [(r[0], r[1], r[2], 'shared') for r in cur.fetchall()]
 
-    seen = set()
+    seen: set = set()
     result = []
     for name, owner, visibility, access in own + public + shared + group_shared:
         key = (name, owner)
         if key in seen:
             continue
         seen.add(key)
-        p_dir = os.path.join(DATA_DIR, owner, name)
-        if os.path.exists(p_dir):
-            result.append({
-                "name": name,
-                "owner": owner,
-                "visibility": visibility,
-                "access": access,   # own / public / shared
-            })
+        if os.path.exists(os.path.join(DATA_DIR, owner, name)):
+            result.append({"name": name, "owner": owner, "visibility": visibility, "access": access})
 
     return sorted(result, key=lambda x: (x["access"] != "own", x["name"]))
 
 
 def get_project_owner(project_name, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT owner FROM custom_projects WHERE name = ? AND (owner = ? OR visibility = "public")',
-            (project_name, username)
+    """Return the owner of project_name that username has access to."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        # Own project
+        cur.execute("SELECT owner FROM custom_projects WHERE name = %s AND owner = %s", (project_name, username))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        # Public project
+        cur.execute("SELECT owner FROM custom_projects WHERE name = %s AND visibility = 'public'", (project_name,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        # Directly shared with this user
+        cur.execute("""
+            SELECT cp.owner FROM custom_projects cp
+            JOIN project_shares ps ON cp.name = ps.project_name AND cp.owner = ps.project_owner
+            WHERE cp.name = %s AND ps.shared_with = %s
+        """, (project_name, username))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        # Shared via group
+        cur.execute("""
+            SELECT cp.owner FROM custom_projects cp
+            JOIN project_group_shares pgs ON cp.name = pgs.project_name AND cp.owner = pgs.project_owner
+            JOIN group_members gm ON pgs.group_name = gm.group_name AND pgs.group_owner = gm.group_owner
+            WHERE cp.name = %s AND gm.username = %s
+        """, (project_name, username))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        return username  # fallback — own project not yet in DB
+
+
+def get_user_permissions(project_name, project_owner, username):
+    """Return list of permission strings for username on this project."""
+    if project_owner == username:
+        return ["documents", "chats", "upload", "query"]
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT permissions FROM project_shares "
+            "WHERE project_name = %s AND project_owner = %s AND shared_with = %s",
+            (project_name, project_owner, username),
         )
-        row = cursor.fetchone()
-        return row[0] if row else username
+        row = cur.fetchone()
+        if row and row[0]:
+            return [p.strip() for p in row[0].split(",") if p.strip()]
+        # Check group share
+        cur.execute("""
+            SELECT pgs.permissions FROM project_group_shares pgs
+            JOIN group_members gm ON pgs.group_name = gm.group_name AND pgs.group_owner = gm.group_owner
+            WHERE pgs.project_name = %s AND pgs.project_owner = %s AND gm.username = %s
+        """, (project_name, project_owner, username))
+        row = cur.fetchone()
+        if row and row[0]:
+            return [p.strip() for p in row[0].split(",") if p.strip()]
+    return []
 
 
 # ─── Sharing ─────────────────────────────────────────────────────────────────
 
-def share_project_with_user(project_name, project_owner, shared_with):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'INSERT OR IGNORE INTO project_shares (project_name, project_owner, shared_with) VALUES (?, ?, ?)',
-            (project_name, project_owner, shared_with)
+def share_project_with_user(project_name, project_owner, shared_with, permissions="documents,chats"):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO project_shares (project_name, project_owner, shared_with, permissions) '
+            'VALUES (%s, %s, %s, %s) ON CONFLICT (project_name, project_owner, shared_with) '
+            'DO UPDATE SET permissions = EXCLUDED.permissions',
+            (project_name, project_owner, shared_with, permissions),
         )
-        conn.commit()
+
+def update_share_permissions(project_name, project_owner, shared_with, permissions):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE project_shares SET permissions = %s '
+            'WHERE project_name = %s AND project_owner = %s AND shared_with = %s',
+            (permissions, project_name, project_owner, shared_with),
+        )
 
 def unshare_project_from_user(project_name, project_owner, shared_with):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'DELETE FROM project_shares WHERE project_name = ? AND project_owner = ? AND shared_with = ?',
-            (project_name, project_owner, shared_with)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM project_shares '
+            'WHERE project_name = %s AND project_owner = %s AND shared_with = %s',
+            (project_name, project_owner, shared_with),
         )
-        conn.commit()
 
 def get_project_shares(project_name, project_owner):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT shared_with FROM project_shares WHERE project_name = ? AND project_owner = ?',
-            (project_name, project_owner)
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT shared_with, permissions FROM project_shares '
+            'WHERE project_name = %s AND project_owner = %s',
+            (project_name, project_owner),
         )
-        return [r[0] for r in cursor.fetchall()]
+        return [
+            {
+                "username": r[0],
+                "permissions": [p.strip() for p in (r[1] or "documents,chats").split(",") if p.strip()],
+            }
+            for r in cur.fetchall()
+        ]
 
 def share_project_with_group(project_name, project_owner, group_name, group_owner):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'INSERT OR IGNORE INTO project_group_shares VALUES (?, ?, ?, ?)',
-            (project_name, project_owner, group_name, group_owner)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO project_group_shares VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING',
+            (project_name, project_owner, group_name, group_owner),
         )
-        conn.commit()
 
 def unshare_project_from_group(project_name, project_owner, group_name, group_owner):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'DELETE FROM project_group_shares WHERE project_name=? AND project_owner=? AND group_name=? AND group_owner=?',
-            (project_name, project_owner, group_name, group_owner)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM project_group_shares '
+            'WHERE project_name=%s AND project_owner=%s AND group_name=%s AND group_owner=%s',
+            (project_name, project_owner, group_name, group_owner),
         )
-        conn.commit()
 
 
 # ─── Groups ──────────────────────────────────────────────────────────────────
 
 def create_group(name, owner):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute('INSERT OR IGNORE INTO groups (name, owner) VALUES (?, ?)', (name, owner))
-        conn.commit()
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO groups (name, owner) VALUES (%s, %s) ON CONFLICT DO NOTHING',
+            (name, owner),
+        )
 
 def delete_group(name, owner):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute('DELETE FROM groups WHERE name = ? AND owner = ?', (name, owner))
-        conn.execute('DELETE FROM group_members WHERE group_name = ? AND group_owner = ?', (name, owner))
-        conn.execute('DELETE FROM project_group_shares WHERE group_name = ? AND group_owner = ?', (name, owner))
-        conn.commit()
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM groups WHERE name = %s AND owner = %s', (name, owner))
+        cur.execute('DELETE FROM group_members WHERE group_name = %s AND group_owner = %s', (name, owner))
+        cur.execute('DELETE FROM project_group_shares WHERE group_name = %s AND group_owner = %s', (name, owner))
 
 def add_group_member(group_name, group_owner, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'INSERT OR IGNORE INTO group_members (group_name, group_owner, username) VALUES (?, ?, ?)',
-            (group_name, group_owner, username)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO group_members (group_name, group_owner, username) '
+            'VALUES (%s, %s, %s) ON CONFLICT DO NOTHING',
+            (group_name, group_owner, username),
         )
-        conn.commit()
 
 def remove_group_member(group_name, group_owner, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'DELETE FROM group_members WHERE group_name = ? AND group_owner = ? AND username = ?',
-            (group_name, group_owner, username)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM group_members '
+            'WHERE group_name = %s AND group_owner = %s AND username = %s',
+            (group_name, group_owner, username),
         )
-        conn.commit()
 
 def get_user_groups(owner):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute('SELECT name FROM groups WHERE owner = ?', (owner,))
-        groups = [r[0] for r in cursor.fetchall()]
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT name FROM groups WHERE owner = %s', (owner,))
+        groups = [r[0] for r in cur.fetchall()]
         result = []
         for g in groups:
-            cursor.execute(
-                'SELECT username FROM group_members WHERE group_name = ? AND group_owner = ?',
-                (g, owner)
+            cur.execute(
+                'SELECT username FROM group_members '
+                'WHERE group_name = %s AND group_owner = %s',
+                (g, owner),
             )
-            members = [r[0] for r in cursor.fetchall()]
-            result.append({"name": g, "members": members})
+            result.append({"name": g, "members": [r[0] for r in cur.fetchall()]})
         return result
 
 
 # ─── Threads / Chat ──────────────────────────────────────────────────────────
 
 def rename_project(old_name, new_name, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute('UPDATE custom_projects SET name=? WHERE name=? AND owner=?', (new_name, old_name, username))
-        conn.execute('UPDATE file_metadata SET project_tag=? WHERE project_tag=? AND owner=?', (new_name, old_name, username))
-        conn.execute('UPDATE chat_history SET project_tag=? WHERE project_tag=? AND owner=?', (new_name, old_name, username))
-        conn.execute('UPDATE project_shares SET project_name=? WHERE project_name=? AND project_owner=?', (new_name, old_name, username))
-        conn.execute('UPDATE project_group_shares SET project_name=? WHERE project_name=? AND project_owner=?', (new_name, old_name, username))
-        conn.commit()
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('UPDATE custom_projects SET name=%s WHERE name=%s AND owner=%s', (new_name, old_name, username))
+        cur.execute('UPDATE file_metadata SET project_tag=%s WHERE project_tag=%s AND owner=%s', (new_name, old_name, username))
+        cur.execute('UPDATE chat_history SET project_tag=%s WHERE project_tag=%s AND owner=%s', (new_name, old_name, username))
+        cur.execute('UPDATE project_shares SET project_name=%s WHERE project_name=%s AND project_owner=%s', (new_name, old_name, username))
+        cur.execute('UPDATE project_group_shares SET project_name=%s WHERE project_name=%s AND project_owner=%s', (new_name, old_name, username))
 
 def get_project_threads(project_tag, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT thread_id FROM chat_history WHERE project_tag = ? AND owner = ? GROUP BY thread_id ORDER BY MAX(timestamp) DESC',
-            (project_tag, username)
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT thread_id FROM chat_history '
+            'WHERE project_tag = %s AND owner = %s '
+            'GROUP BY thread_id ORDER BY MAX(timestamp) DESC',
+            (project_tag, username),
         )
-        threads = [row[0] for row in cursor.fetchall()]
+        threads = [row[0] for row in cur.fetchall()]
         return threads if threads else []
 
 def rename_thread(project, username, old_id, new_id):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'UPDATE chat_history SET thread_id=? WHERE thread_id=? AND project_tag=? AND owner=?',
-            (new_id, old_id, project, username)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE chat_history SET thread_id=%s '
+            'WHERE thread_id=%s AND project_tag=%s AND owner=%s',
+            (new_id, old_id, project, username),
         )
-        conn.commit()
 
 def delete_thread(project, username, thread_id):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'DELETE FROM chat_history WHERE thread_id=? AND project_tag=? AND owner=?',
-            (thread_id, project, username)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM chat_history WHERE thread_id=%s AND project_tag=%s AND owner=%s',
+            (thread_id, project, username),
         )
-        conn.commit()
 
 def save_chat_message(project, username, thread_id, role, content):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'INSERT INTO chat_history (project_tag, owner, thread_id, role, content) VALUES (?, ?, ?, ?, ?)',
-            (project, username, thread_id, role, content)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO chat_history (project_tag, owner, thread_id, role, content) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            (project, username, thread_id, role, content),
         )
 
 def get_chat_history(project, username, thread_id):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT role, content FROM chat_history WHERE project_tag = ? AND owner = ? AND thread_id = ? ORDER BY timestamp ASC',
-            (project, username, thread_id)
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT role, content FROM chat_history '
+            'WHERE project_tag = %s AND owner = %s AND thread_id = %s '
+            'ORDER BY timestamp ASC',
+            (project, username, thread_id),
         )
-        return [{"role": row[0], "content": row[1]} for row in cursor.fetchall()]
+        return [{"role": row[0], "content": row[1]} for row in cur.fetchall()]
 
 
 # ─── Files ───────────────────────────────────────────────────────────────────
 
 def delete_file_metadata(file_name, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute('DELETE FROM file_metadata WHERE file_name = ? AND owner = ?', (file_name, username))
-        conn.commit()
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM file_metadata WHERE file_name = %s AND owner = %s',
+            (file_name, username),
+        )
 
 def save_file_project(file_name, project_tag, username):
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute(
-            'INSERT INTO file_metadata (file_name, project_tag, owner) VALUES (?, ?, ?)',
-            (file_name, project_tag, username)
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO file_metadata (file_name, project_tag, owner) VALUES (%s, %s, %s)',
+            (file_name, project_tag, username),
         )
 
 def get_metadata_for_file(file_path):
     file_name = os.path.basename(file_path)
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute('SELECT project_tag, owner FROM file_metadata WHERE file_name = ?', (file_name,))
-        row = cursor.fetchone()
-        return {"project": row[0] if row else "Unknown", "file_name": file_name, "owner": row[1] if row else "Unknown"}
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT project_tag, owner FROM file_metadata WHERE file_name = %s', (file_name,))
+        row = cur.fetchone()
+        return {
+            "project":   row[0] if row else "Unknown",
+            "file_name": file_name,
+            "owner":     row[1] if row else "Unknown",
+        }
 
 
 # ─── System ──────────────────────────────────────────────────────────────────
 
 def update_index_signal():
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute("UPDATE system_state SET value = ? WHERE key = 'last_index_update'", (str(time.time()),))
+    with _conn() as conn:
+        conn.cursor().execute(
+            "UPDATE system_state SET value = %s WHERE key = 'last_index_update'",
+            (str(time.time()),),
+        )
 
 def get_index_signal():
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT value FROM system_state WHERE key = 'last_index_update'")
-        row = cursor.fetchone()
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM system_state WHERE key = 'last_index_update'")
+        row = cur.fetchone()
         return row[0] if row else '0'
 
+# ─── Snapshots ───────────────────────────────────────────────────────────────
+
+import json as _json
+
+def create_snapshot(snap_id, project_name, project_owner, thread_id, title, created_by, messages, files):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'INSERT INTO snapshots (id, project_name, project_owner, thread_id, title, created_by, messages, files) '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s)',
+            (snap_id, project_name, project_owner, thread_id, title, created_by,
+             _json.dumps(messages), list(files)),
+        )
+
+def get_snapshot(snap_id):
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT id, project_name, project_owner, thread_id, title, created_by, created_at, messages, files FROM snapshots WHERE id = %s', (snap_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "project_name": row[1], "project_owner": row[2],
+            "thread_id": row[3], "title": row[4], "created_by": row[5],
+            "created_at": row[6].isoformat() if row[6] else None,
+            "messages": row[7] if isinstance(row[7], list) else _json.loads(row[7] or "[]"),
+            "files": list(row[8] or []),
+        }
+
+def list_user_snapshots(username):
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, project_name, thread_id, title, created_at, files '
+            'FROM snapshots WHERE created_by = %s ORDER BY created_at DESC',
+            (username,),
+        )
+        return [
+            {"id": r[0], "project_name": r[1], "thread_id": r[2], "title": r[3],
+             "created_at": r[4].isoformat() if r[4] else None, "files": list(r[5] or [])}
+            for r in cur.fetchall()
+        ]
+
+def delete_snapshot(snap_id, username):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'DELETE FROM snapshots WHERE id = %s AND created_by = %s',
+            (snap_id, username),
+        )
+
+
 def nuke_database():
-    with sqlite3.connect(DB_PATH, timeout=5) as conn:
-        conn.execute('DELETE FROM custom_projects')
-        conn.execute('DELETE FROM file_metadata')
-        conn.execute('DELETE FROM chat_history')
-        conn.execute('DELETE FROM project_shares')
-        conn.execute('DELETE FROM project_group_shares')
-        conn.execute("UPDATE system_state SET value = '0' WHERE key = 'last_index_update'")
-        conn.commit()
-
-
-init_db()
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM custom_projects')
+        cur.execute('DELETE FROM file_metadata')
+        cur.execute('DELETE FROM chat_history')
+        cur.execute('DELETE FROM project_shares')
+        cur.execute('DELETE FROM project_group_shares')
+        cur.execute("UPDATE system_state SET value = '0' WHERE key = 'last_index_update'")

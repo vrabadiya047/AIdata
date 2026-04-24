@@ -5,12 +5,13 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight,
   Terminal, Archive, Zap, LogOut, Trash2,
-  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X,
+  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera,
 } from "lucide-react";
 import { useSession } from "@/contexts/SessionContext";
 import { getWorkspaces, getProjectThreads } from "@/app/actions";
 import { Workspace } from "@/types/sovereign";
 import ShareModal from "@/components/ShareModal";
+import SnapshotModal from "@/components/SnapshotModal";
 import ThemeToggle from "@/components/ThemeToggle";
 import QueryLogPanel from "@/components/QueryLogPanel";
 
@@ -25,11 +26,12 @@ interface SidebarProps {
 // ─── SectionLabel ─────────────────────────────────────────────────────────────
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="font-mono" style={{
-      fontSize: "9px", letterSpacing: "0.18em", color: "var(--t3)",
-      padding: "16px 12px 6px", textTransform: "uppercase",
-    }}>
-      {children}
+    <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "18px 12px 6px" }}>
+      <span className="font-mono" style={{
+        fontSize: "9px", letterSpacing: "0.2em", color: "var(--t2)",
+        textTransform: "uppercase", flexShrink: 0,
+      }}>{children}</span>
+      <div style={{ flex: 1, height: "1px", background: "linear-gradient(90deg, var(--b1) 0%, transparent 100%)" }} />
     </div>
   );
 }
@@ -47,13 +49,14 @@ function NavItem({
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
-        width: "100%", display: "flex", alignItems: "center", gap: "9px",
-        padding: "8px 10px", borderRadius: "8px", cursor: "pointer",
-        border: "none", marginBottom: "1px",
+        width: "100%", display: "flex", alignItems: "center", gap: "10px",
+        padding: "8px 12px", borderRadius: "8px", cursor: "pointer",
+        border: active ? "1px solid var(--amber-25)" : "1px solid transparent",
+        marginBottom: "2px",
         background: active
-          ? "linear-gradient(90deg, var(--amber-10) 0%, var(--amber-5) 100%)"
+          ? "linear-gradient(90deg, rgba(245,158,11,0.12) 0%, rgba(245,158,11,0.04) 100%)"
           : hov ? "var(--hover-bg)" : "transparent",
-        transition: "background 0.15s ease", textAlign: "left",
+        transition: "all 0.15s ease", textAlign: "left",
       }}
     >
       {children}
@@ -106,29 +109,53 @@ function ContextMenu({
   );
 }
 
-// ─── NewSessionButton ─────────────────────────────────────────────────────────
-function NewSessionButton({ onClick }: { onClick: () => void }) {
-  const [hov, setHov] = useState(false);
+// ─── ActionButtons ────────────────────────────────────────────────────────────
+function ActionButtons({
+  onNewChat, onNewWorkspace,
+}: { onNewChat: () => void; onNewWorkspace: () => void }) {
+  const [hovChat, setHovChat] = useState(false);
+  const [hovWs, setHovWs] = useState(false);
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
-      style={{
-        width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "9px 14px", borderRadius: "10px", cursor: "pointer",
-        border: "1px solid", borderColor: hov ? "var(--amber-40)" : "var(--amber-25)",
-        background: hov
-          ? "linear-gradient(135deg, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0.08) 100%)"
-          : "linear-gradient(135deg, rgba(245,158,11,0.10) 0%, rgba(245,158,11,0.04) 100%)",
-        color: "var(--amber)", fontSize: "13px", fontWeight: 500,
-        transition: "all 0.2s ease",
-        boxShadow: hov ? "0 0 16px rgba(245,158,11,0.1)" : "none",
-      }}
-    >
-      <span>New Session</span>
-      <Plus size={14} />
-    </button>
+    <div style={{ display: "flex", gap: "6px" }}>
+      {/* New Chat — primary */}
+      <button
+        onClick={onNewChat}
+        onMouseEnter={() => setHovChat(true)}
+        onMouseLeave={() => setHovChat(false)}
+        style={{
+          flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "7px",
+          padding: "9px 12px", borderRadius: "10px", cursor: "pointer",
+          border: "1px solid", borderColor: hovChat ? "var(--amber-40)" : "var(--amber-25)",
+          background: hovChat
+            ? "linear-gradient(135deg, rgba(245,158,11,0.22) 0%, rgba(245,158,11,0.10) 100%)"
+            : "linear-gradient(135deg, rgba(245,158,11,0.13) 0%, rgba(245,158,11,0.05) 100%)",
+          color: "var(--amber)", fontSize: "12.5px", fontWeight: 600,
+          transition: "all 0.2s ease",
+          boxShadow: hovChat ? "0 0 18px rgba(245,158,11,0.12), inset 0 1px 0 rgba(245,158,11,0.1)" : "none",
+        }}
+      >
+        <Plus size={13} strokeWidth={2.5} />
+        <span>New Chat</span>
+      </button>
+      {/* New Workspace — secondary */}
+      <button
+        onClick={onNewWorkspace}
+        onMouseEnter={() => setHovWs(true)}
+        onMouseLeave={() => setHovWs(false)}
+        title="New Workspace"
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: "5px",
+          padding: "9px 11px", borderRadius: "10px", cursor: "pointer",
+          border: "1px solid", borderColor: hovWs ? "var(--b1)" : "var(--b2)",
+          background: hovWs ? "var(--hover-bg)" : "var(--raised)",
+          color: hovWs ? "var(--t1)" : "var(--t2)", fontSize: "11px", fontWeight: 500,
+          transition: "all 0.2s ease", whiteSpace: "nowrap",
+        }}
+      >
+        <Plus size={11} />
+        <span>Workspace</span>
+      </button>
+    </div>
   );
 }
 
@@ -161,6 +188,7 @@ export default function Sidebar({
 
   const [shareTarget, setShareTarget] = useState<Workspace | null>(null);
   const [showQueryLog, setShowQueryLog] = useState(false);
+  const [snapshotThread, setSnapshotThread] = useState<string | null>(null);
 
   const username = session?.username ?? "";
 
@@ -546,12 +574,48 @@ export default function Sidebar({
             )}
           </div>
 
-          {/* ── New Session ───────────────────────────────────────────────── */}
-          <div style={{ padding: "4px 2px 2px" }}>
-            <NewSessionButton onClick={() => {
-              if (activeProject) onSelectThread(`Thread-${Date.now()}`);
-            }} />
+          {/* ── New Chat + New Workspace ──────────────────────────────────── */}
+          <div style={{ padding: "6px 2px 2px" }}>
+            <ActionButtons
+              onNewChat={() => { if (activeProject) onSelectThread(`Thread-${Date.now()}`); }}
+              onNewWorkspace={() => { setWsOpen(true); setTimeout(() => setShowNewWs(true), 50); }}
+            />
           </div>
+
+          {/* ── Tools — always visible ────────────────────────────────────── */}
+          <SectionLabel>Tools</SectionLabel>
+          <NavItem onClick={onOpenDocs}>
+            <div style={{
+              width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
+              background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.2)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <Archive size={12} style={{ color: "var(--cyan)" }} />
+            </div>
+            <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Documents</span>
+          </NavItem>
+          <NavItem onClick={() => setShowQueryLog(true)}>
+            <div style={{
+              width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
+              background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.2)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <Terminal size={12} style={{ color: "var(--green)" }} />
+            </div>
+            <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Query Log</span>
+          </NavItem>
+          {session?.role === "Admin" && (
+            <NavItem onClick={() => router.push("/admin")}>
+              <div style={{
+                width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
+                background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.2)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <Zap size={12} style={{ color: "var(--amber)" }} />
+              </div>
+              <span style={{ fontSize: "13px", color: "var(--amber)", fontWeight: 500 }}>Admin</span>
+            </NavItem>
+          )}
 
           {/* ── History ──────────────────────────────────────────────────── */}
           {activeProject && threads.length > 0 && (
@@ -575,12 +639,10 @@ export default function Sidebar({
                           borderRadius: "5px", color: "var(--t1)", fontSize: "12px", outline: "none",
                         }}
                       />
-                      <button
-                        onClick={() => commitRenameThread(t, renamingThread.value)}
+                      <button onClick={() => commitRenameThread(t, renamingThread.value)}
                         style={{ background: "none", border: "none", cursor: "pointer", color: "var(--green)", padding: "2px" }}
                       ><Check size={12} /></button>
-                      <button
-                        onClick={() => setRenamingThread(null)}
+                      <button onClick={() => setRenamingThread(null)}
                         style={{ background: "none", border: "none", cursor: "pointer", color: "var(--t3)", padding: "2px" }}
                       ><X size={12} /></button>
                     </div>
@@ -589,15 +651,16 @@ export default function Sidebar({
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <NavItem active={activeThread === t} onClick={() => onSelectThread(t)}>
                           {activeThread === t ? (
-                            <div style={{ width: "3px", height: "14px", borderRadius: "2px", background: "var(--amber)", flexShrink: 0, boxShadow: "0 0 6px var(--amber-40)" }} />
+                            <div style={{ width: "3px", height: "16px", borderRadius: "2px", background: "var(--amber)", flexShrink: 0, boxShadow: "0 0 8px rgba(245,158,11,0.5)" }} />
                           ) : (
                             <Hash size={11} style={{ color: "var(--t3)", flexShrink: 0 }} />
                           )}
                           <span style={{
                             fontSize: "12.5px",
-                            color: activeThread === t ? "var(--t1)" : "var(--t2)",
+                            color: activeThread === t ? "var(--t1)" : "var(--t1)",
+                            opacity: activeThread === t ? 1 : 0.7,
                             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                            flex: 1, fontWeight: activeThread === t ? 500 : 400,
+                            flex: 1, fontWeight: activeThread === t ? 600 : 400,
                           }}>{t}</span>
                         </NavItem>
                       </div>
@@ -609,24 +672,18 @@ export default function Sidebar({
                             color: "var(--t3)", padding: "5px 4px", borderRadius: "4px",
                             display: "flex", alignItems: "center",
                           }}
+                          onMouseEnter={(e) => (e.currentTarget.style.color = "var(--t2)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.color = "var(--t3)")}
                         >
-                          <MoreHorizontal size={11} />
+                          <MoreHorizontal size={12} />
                         </button>
                         {threadMenu === t && (
                           <ContextMenu
                             onClose={() => setThreadMenu(null)}
                             items={[
-                              {
-                                label: "Rename",
-                                icon: <Pencil size={11} />,
-                                onClick: () => setRenamingThread({ id: t, value: t }),
-                              },
-                              {
-                                label: "Delete",
-                                icon: <Trash2 size={11} />,
-                                danger: true,
-                                onClick: () => deleteThread(t),
-                              },
+                              { label: "Rename", icon: <Pencil size={11} />, onClick: () => setRenamingThread({ id: t, value: t }) },
+                              { label: "Snapshot", icon: <Camera size={11} />, onClick: () => { setSnapshotThread(t); setThreadMenu(null); } },
+                              { label: "Delete", icon: <Trash2 size={11} />, danger: true, onClick: () => deleteThread(t) },
                             ]}
                           />
                         )}
@@ -636,23 +693,6 @@ export default function Sidebar({
                 </div>
               ))}
             </>
-          )}
-
-          {/* ── Tools ────────────────────────────────────────────────────── */}
-          <SectionLabel>Tools</SectionLabel>
-          <NavItem onClick={onOpenDocs}>
-            <Archive size={12} style={{ color: "var(--t3)", flexShrink: 0 }} />
-            <span style={{ fontSize: "12.5px", color: "var(--t2)" }}>Documents</span>
-          </NavItem>
-          <NavItem onClick={() => setShowQueryLog(true)}>
-            <Terminal size={12} style={{ color: "var(--t3)", flexShrink: 0 }} />
-            <span style={{ fontSize: "12.5px", color: "var(--t2)" }}>Query Log</span>
-          </NavItem>
-          {session?.role === "Admin" && (
-            <NavItem onClick={() => router.push("/admin")}>
-              <Zap size={13} style={{ color: "var(--amber)", flexShrink: 0 }} />
-              <span style={{ fontSize: "13px", color: "var(--amber)" }}>Admin</span>
-            </NavItem>
           )}
 
           <div style={{ height: "16px" }} />
@@ -671,8 +711,8 @@ export default function Sidebar({
           </div>
 
           <NavItem onClick={handleLogout}>
-            <LogOut size={13} style={{ color: "var(--t3)", flexShrink: 0 }} />
-            <span style={{ fontSize: "13px", color: "var(--t3)" }}>Sign out</span>
+            <LogOut size={13} style={{ color: "#ef4444", flexShrink: 0 }} />
+            <span style={{ fontSize: "13px", color: "var(--t2)", fontWeight: 500 }}>Sign out</span>
           </NavItem>
 
           <div style={{
@@ -714,6 +754,14 @@ export default function Sidebar({
       )}
 
       {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
+
+      {snapshotThread && (
+        <SnapshotModal
+          project={activeProject}
+          threadId={snapshotThread}
+          onClose={() => setSnapshotThread(null)}
+        />
+      )}
     </>
   );
 }

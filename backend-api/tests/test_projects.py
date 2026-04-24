@@ -101,7 +101,7 @@ def test_share_and_get_shares(auth_client):
 
     r = auth_client.get("/api/projects/ShareMe/shares")
     assert r.status_code == 200
-    assert "bob" in r.json()["shared_with"]
+    assert any(s["username"] == "bob" for s in r.json()["shared_with"])
 
 
 def test_unshare(auth_client):

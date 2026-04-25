@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Globe, Lock, Users, Plus, Trash2, UserPlus, Shield, FileText, MessageSquare, Upload, Search } from "lucide-react";
+import { X, Globe, Lock, Users, Plus, Trash2, UserPlus, Shield, FileText, MessageSquare, Upload, Search, Clock } from "lucide-react";
 
 interface ShareModalProps {
   project: string;
@@ -14,6 +14,26 @@ interface ShareModalProps {
 interface SharedUser {
   username: string;
   permissions: string[];
+  valid_until?: string | null;
+}
+
+const EXPIRY_OPTIONS: { label: string; hours: number | null }[] = [
+  { label: "No expiry",  hours: null },
+  { label: "24 hours",   hours: 24 },
+  { label: "7 days",     hours: 168 },
+  { label: "30 days",    hours: 720 },
+];
+
+function expiryLabel(valid_until?: string | null): { text: string; expired: boolean } | null {
+  if (!valid_until) return null;
+  const exp = new Date(valid_until);
+  const now = new Date();
+  if (exp <= now) return { text: "Expired", expired: true };
+  const ms = exp.getTime() - now.getTime();
+  const hours = ms / 3600000;
+  if (hours < 1) return { text: `${Math.ceil(ms / 60000)}m left`, expired: false };
+  if (hours < 48) return { text: `${Math.ceil(hours)}h left`, expired: false };
+  return { text: `${Math.ceil(hours / 24)}d left`, expired: false };
 }
 
 const VISIBILITY_OPTIONS = [
@@ -76,6 +96,7 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
   const [groups, setGroups] = useState<{ name: string; members: string[] }[]>([]);
   const [newUser, setNewUser] = useState("");
   const [newUserPerms, setNewUserPerms] = useState<string[]>(["documents", "chats"]);
+  const [newUserExpiry, setNewUserExpiry] = useState<number | null>(null);
   const [newGroup, setNewGroup] = useState("");
   const [newGroupMember, setNewGroupMember] = useState("");
   const [saving, setSaving] = useState(false);
@@ -121,10 +142,15 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
     await fetch(`/api/projects/${encodeURIComponent(project)}/share`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ shared_with: newUser.trim(), permissions: newUserPerms }),
+      body: JSON.stringify({
+        shared_with: newUser.trim(),
+        permissions: newUserPerms,
+        expires_hours: newUserExpiry,
+      }),
     });
     setNewUser("");
     setNewUserPerms(["documents", "chats"]);
+    setNewUserExpiry(null);
     await fetchShares();
   }
 
@@ -308,6 +334,31 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
                   <div style={{ fontSize: "11px", color: "var(--t3)", marginBottom: "2px" }}>Permissions</div>
                   <PermChips selected={newUserPerms} onChange={setNewUserPerms} />
                 </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "2px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--t3)", display: "flex", alignItems: "center", gap: "4px" }}>
+                    <Clock size={10} /> Access expires
+                  </div>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    {EXPIRY_OPTIONS.map(({ label, hours }) => {
+                      const active = newUserExpiry === hours;
+                      return (
+                        <button
+                          key={label}
+                          onClick={() => setNewUserExpiry(hours)}
+                          style={{
+                            padding: "4px 10px", borderRadius: "6px", fontSize: "11px", fontWeight: 500,
+                            border: `1px solid ${active ? "var(--amber)" : "var(--b2)"}`,
+                            background: active ? "rgba(245,158,11,0.12)" : "transparent",
+                            color: active ? "var(--amber)" : "var(--t3)", cursor: "pointer",
+                            transition: "all 0.15s ease",
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
               {/* Shared users list */}
@@ -331,7 +382,7 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>{su.username}</div>
-                          <div style={{ display: "flex", gap: "4px", marginTop: "4px", flexWrap: "wrap" }}>
+                          <div style={{ display: "flex", gap: "4px", marginTop: "4px", flexWrap: "wrap", alignItems: "center" }}>
                             {su.permissions.map((p) => {
                               const def = PERM_DEFS.find((d) => d.id === p);
                               return (
@@ -340,6 +391,21 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
                                 </span>
                               );
                             })}
+                            {(() => {
+                              const exp = expiryLabel(su.valid_until);
+                              if (!exp) return null;
+                              return (
+                                <span style={{
+                                  fontSize: "9px", padding: "2px 6px", borderRadius: "4px",
+                                  display: "flex", alignItems: "center", gap: "3px",
+                                  border: `1px solid ${exp.expired ? "var(--red, #f87171)" : "rgba(245,158,11,0.4)"}`,
+                                  color: exp.expired ? "var(--red, #f87171)" : "var(--amber)",
+                                  background: exp.expired ? "rgba(248,113,113,0.08)" : "rgba(245,158,11,0.08)",
+                                }}>
+                                  <Clock size={8} /> {exp.text}
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
                         <button

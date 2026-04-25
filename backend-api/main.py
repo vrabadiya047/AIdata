@@ -16,6 +16,8 @@ from src import adb
 from src.engine import (
     get_query_engine,
     get_query_components,
+    get_agent_engine,
+    get_file_chunks,
     index_file, remove_file_from_index, rename_project_index, delete_project_index,
 )
 from src.database import (
@@ -31,10 +33,12 @@ from src.database import (
     create_snapshot, get_snapshot, list_user_snapshots, delete_snapshot,
     enqueue_job, get_job, get_project_jobs,
     log_redaction_event, get_redaction_stats,
+    set_file_version,
 )
 from src.manager import (
     handle_create_project, handle_delete_project,
-    handle_file_upload, handle_delete_file, list_files_in_project
+    handle_file_upload, handle_delete_file, list_files_in_project,
+    list_files_with_metadata,
 )
 from src.privacy import shield
 from src.logger import log_query
@@ -345,11 +349,17 @@ async def update_visibility(name: str, data: VisibilityRequest, user: dict = Dep
 class ShareUserRequest(BaseModel):
     shared_with: str
     permissions: list[str] = ["documents", "chats"]
+    expires_hours: int | None = None
 
 @app.post("/api/projects/{name}/share")
 async def share_with_user(name: str, data: ShareUserRequest, user: dict = Depends(get_current_user)):
+    from datetime import datetime, timedelta, timezone
     perms_str = ",".join(data.permissions) if data.permissions else "documents,chats"
-    await adb.share_project_with_user(name, user["username"], data.shared_with, perms_str)
+    valid_until = (
+        datetime.now(timezone.utc) + timedelta(hours=data.expires_hours)
+        if data.expires_hours else None
+    )
+    await adb.share_project_with_user(name, user["username"], data.shared_with, perms_str, valid_until)
     return {"status": "shared"}
 
 @app.delete("/api/projects/{name}/share/{target}")
@@ -451,8 +461,17 @@ async def delete_file(filename: str, project: str, background_tasks: BackgroundT
 
 @app.get("/api/files")
 async def list_files(project: str, user: dict = Depends(get_current_user)):
-    files = await adb.list_files_in_project(project, user["username"])
+    files = await run_in_threadpool(list_files_with_metadata, project, user["username"])
     return {"files": files}
+
+class FileVersionRequest(BaseModel):
+    project: str
+    version: str
+
+@app.put("/api/files/{filename}/version")
+async def update_file_version(filename: str, data: FileVersionRequest, user: dict = Depends(get_current_user)):
+    await run_in_threadpool(set_file_version, filename, data.project, user["username"], data.version)
+    return {"status": "updated"}
 
 
 # ─── Indexing Jobs ────────────────────────────────────────────────────────────
@@ -732,6 +751,163 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
     return StreamingResponse(generate_tokens(), media_type="text/event-stream")
 
 
+# ─── Agentic query (ReActAgent with tools) ───────────────────────────────────
+
+@app.post("/api/agent")
+async def agent_query(data: QueryRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    safe_prompt = shield.redact_and_log(
+        data.prompt, username=data.username, project=data.project, context="query"
+    )
+    owner = await adb.get_project_owner(data.project, data.username)
+    if owner != data.username:
+        perms = await adb.get_user_permissions(data.project, owner, data.username)
+        if "query" not in perms and "documents" not in perms:
+            raise HTTPException(status_code=403, detail="No query permission on this workspace.")
+
+    await adb.save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
+
+    async def generate_agent():
+        from llama_index.core.agent.workflow.workflow_events import AgentStream, ToolCallResult
+
+        agent = await run_in_threadpool(get_agent_engine, data.project, owner)
+        if agent is None:
+            yield f"data: {json.dumps({'token': 'No documents indexed for this workspace. Upload files first.'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        full_response = ""
+        try:
+            handler = agent.run(safe_prompt)
+
+            # The ReActAgent streams its entire internal monologue (Thought / Action /
+            # Action Input / Observation) through AgentStream events before the final
+            # "Answer:". We buffer deltas until the "Answer:" marker is seen, then
+            # stream only the clean answer to the client.
+            delta_buf   = ""
+            answer_mode = False
+
+            async for event in handler.stream_events():
+                if isinstance(event, ToolCallResult):
+                    tool_name   = event.tool_name or "tool"
+                    tool_kwargs = str(event.tool_kwargs or "")[:120]
+                    tool_output = str(event.tool_output or "")[:400]
+                    thought = f"**{tool_name}**({tool_kwargs}):\n{tool_output}"
+                    yield f"data: {json.dumps({'thought': thought})}\n\n"
+
+                elif isinstance(event, AgentStream) and event.delta:
+                    if answer_mode:
+                        full_response += event.delta
+                        yield f"data: {json.dumps({'token': event.delta})}\n\n"
+                        await asyncio.sleep(0.01)
+                    else:
+                        delta_buf += event.delta
+                        if "Answer:" in delta_buf:
+                            answer_mode = True
+                            answer_part = delta_buf.split("Answer:", 1)[1].lstrip(" \n")
+                            if answer_part:
+                                full_response += answer_part
+                                yield f"data: {json.dumps({'token': answer_part})}\n\n"
+                                await asyncio.sleep(0.01)
+                            delta_buf = ""
+
+            try:
+                await handler
+            except Exception:
+                pass
+
+            # Fallback: no "Answer:" marker — emit the buffered content minus
+            # ReAct boilerplate, or get the result directly from the handler.
+            if not full_response:
+                clean = delta_buf
+                for marker in ("Thought:", "Action:", "Action Input:", "Observation:"):
+                    if marker in clean:
+                        parts = clean.split(marker)
+                        clean = parts[-1]
+                clean = clean.strip()
+                if not clean:
+                    try:
+                        final = await agent.run(safe_prompt)
+                        clean = str(final or "")
+                    except Exception:
+                        pass
+                full_response = clean
+                chunk = 8
+                for i in range(0, max(len(full_response), 1), chunk):
+                    yield f"data: {json.dumps({'token': full_response[i:i + chunk]})}\n\n"
+                    await asyncio.sleep(0.008)
+
+        except Exception as exc:
+            err = f"Agent error: {exc}"
+            yield f"data: {json.dumps({'token': err})}\n\n"
+            full_response = full_response or err
+
+        await adb.save_chat_message(data.project, data.username, data.thread_id, "assistant", full_response)
+        background_tasks.add_task(log_query, safe_prompt, full_response)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate_agent(), media_type="text/event-stream")
+
+
+# ─── Document diff (version comparison) ─────────────────────────────────────
+
+class DiffRequest(BaseModel):
+    file_a:  str
+    file_b:  str
+    project: str
+
+_DIFF_PROMPT = (
+    "You are a technical document analyst. Compare these two engineering documents precisely.\n\n"
+    "Provide:\n"
+    "1. **Overview** — what each document covers (1-2 sentences each)\n"
+    "2. **Changed parameters** — exact values that differ (table or bullet list)\n"
+    "3. **Added content** — sections or requirements present in B but not A\n"
+    "4. **Removed content** — sections or requirements present in A but not B\n"
+    "5. **Significance** — brief assessment of how material the changes are\n\n"
+    "Document A ({file_a}):\n{text_a}\n\n"
+    "---\n\n"
+    "Document B ({file_b}):\n{text_b}\n\n"
+    "Technical Comparison:"
+)
+
+@app.post("/api/diff")
+async def diff_documents(data: DiffRequest, user: dict = Depends(get_current_user)):
+    owner = await adb.get_project_owner(data.project, user["username"])
+
+    chunks_a, chunks_b = await asyncio.gather(
+        run_in_threadpool(get_file_chunks, owner, data.project, data.file_a),
+        run_in_threadpool(get_file_chunks, owner, data.project, data.file_b),
+    )
+    if not chunks_a:
+        raise HTTPException(404, detail=f"No indexed content found for '{data.file_a}'. Re-upload the file to index it.")
+    if not chunks_b:
+        raise HTTPException(404, detail=f"No indexed content found for '{data.file_b}'. Re-upload the file to index it.")
+
+    MAX = 2500
+    text_a = "\n\n".join(chunks_a)[:MAX]
+    text_b = "\n\n".join(chunks_b)[:MAX]
+    prompt_str = _DIFF_PROMPT.format(
+        file_a=data.file_a, file_b=data.file_b,
+        text_a=text_a, text_b=text_b,
+    )
+
+    async def generate_diff():
+        try:
+            from src.config import setup_ai_settings
+            from llama_index.core import Settings as _Settings
+            result = await run_in_threadpool(lambda: _Settings.llm.complete(prompt_str).text)
+        except Exception as exc:
+            yield f"data: {json.dumps({'token': f'[Diff error: {exc}]'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        chunk_size = 8
+        for i in range(0, max(len(result), 1), chunk_size):
+            yield f"data: {json.dumps({'token': result[i:i + chunk_size]})}\n\n"
+            await asyncio.sleep(0.008)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate_diff(), media_type="text/event-stream")
+
+
 class SummaryRequest(BaseModel):
     project: str
     username: str
@@ -854,4 +1030,97 @@ async def vision_query(data: VisionRequest, user: dict = Depends(get_current_use
 
 if __name__ == "__main__":
     import uvicorn
+    import subprocess
+    import threading
+    import time
+    import pathlib
+    import shutil
+    import socket
+
+    ROOT = pathlib.Path(__file__).resolve().parent.parent
+    BACKEND_DIR = ROOT / "backend-api"
+    FRONTEND_DIR = ROOT / "frontend-ui"
+
+    npm   = "npm.cmd"   if os.name == "nt" else "npm"
+    docker = shutil.which("docker")
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _port_open(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            return False
+
+    def _wait_port(port: int, label: str, timeout: int = 60):
+        print(f"[launcher] Waiting for {label} on port {port}…", flush=True)
+        for _ in range(timeout):
+            if _port_open(port):
+                print(f"[launcher] {label} is ready.", flush=True)
+                return True
+            time.sleep(1)
+        print(f"[launcher] WARNING: {label} did not become ready in {timeout}s.", flush=True)
+        return False
+
+    def _run(name: str, cmd: list, cwd=None, env=None):
+        def _target():
+            subprocess.run(cmd, cwd=cwd, env=env)
+        t = threading.Thread(target=_target, daemon=True, name=name)
+        t.start()
+        return t
+
+    # ── 1. Infrastructure via Docker Compose ──────────────────────────────────
+
+    if docker:
+        print("[launcher] Starting infrastructure (postgres, qdrant, neo4j) via Docker…", flush=True)
+        subprocess.run(
+            [docker, "compose", "up", "-d", "postgres", "qdrant", "neo4j"],
+            cwd=ROOT,
+        )
+        _wait_port(5432, "PostgreSQL")
+        _wait_port(6333, "Qdrant")
+        _wait_port(7474, "Neo4j")
+    else:
+        print("[launcher] Docker not found — assuming PostgreSQL, Qdrant, Neo4j are already running.", flush=True)
+
+    # Set local env vars so the backend finds the services
+    os.environ.setdefault("DATABASE_URL",          "postgresql://sovereign:sovereign@localhost:5432/sovereign")
+    os.environ.setdefault("QDRANT_URL",            "http://localhost:6333")
+    os.environ.setdefault("NEO4J_URL",             "bolt://localhost:7687")
+    os.environ.setdefault("NEO4J_USERNAME",        "neo4j")
+    os.environ.setdefault("NEO4J_PASSWORD",        "sovereign2026")
+    os.environ.setdefault("SOVEREIGN_DATA_DIR",    str(BACKEND_DIR / "data"))
+    os.environ.setdefault("SOVEREIGN_LOG_DIR",     str(BACKEND_DIR / "logs"))
+    os.environ.setdefault("SOVEREIGN_STORAGE_DIR", str(BACKEND_DIR / "storage"))
+
+    # ── 2. Ollama ─────────────────────────────────────────────────────────────
+
+    ollama = shutil.which("ollama")
+    if ollama:
+        if _port_open(11434):
+            print("[launcher] Ollama already running.", flush=True)
+        else:
+            print("[launcher] Starting Ollama…", flush=True)
+            _run("ollama", [ollama, "serve"])
+            _wait_port(11434, "Ollama")
+    else:
+        print("[launcher] Ollama not found — install from https://ollama.com if you need AI features.", flush=True)
+
+    # ── 3. Frontend ───────────────────────────────────────────────────────────
+
+    if FRONTEND_DIR.is_dir():
+        print("[launcher] Starting Next.js frontend at http://localhost:3000…", flush=True)
+        _run("frontend", [npm, "run", "dev"], cwd=FRONTEND_DIR)
+    else:
+        print(f"[launcher] Frontend directory not found at {FRONTEND_DIR}", flush=True)
+
+    # ── 4. Backend ────────────────────────────────────────────────────────────
+
+    print("[launcher] Starting backend at http://127.0.0.1:8000…", flush=True)
+    print("[launcher] ─────────────────────────────────────────────", flush=True)
+    print("[launcher]   App:      http://localhost:3000", flush=True)
+    print("[launcher]   API:      http://127.0.0.1:8000", flush=True)
+    print("[launcher]   Login:    admin / Admin2026!", flush=True)
+    print("[launcher] ─────────────────────────────────────────────", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=8000)

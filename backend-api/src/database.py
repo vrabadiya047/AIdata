@@ -129,6 +129,8 @@ def init_db():
             "ALTER TABLE custom_projects ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'private'",
             "ALTER TABLE project_shares ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT 'documents,chats'",
             "ALTER TABLE project_group_shares ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT 'documents,chats'",
+            "ALTER TABLE project_shares ADD COLUMN IF NOT EXISTS valid_until TIMESTAMP DEFAULT NULL",
+            "ALTER TABLE file_metadata ADD COLUMN IF NOT EXISTS version TEXT DEFAULT NULL",
         ]:
             cur.execute(sql)
 
@@ -180,6 +182,7 @@ def get_all_projects(username):
             JOIN project_shares ps
               ON cp.name = ps.project_name AND cp.owner = ps.project_owner
             WHERE ps.shared_with = %s AND cp.owner != %s
+              AND (ps.valid_until IS NULL OR ps.valid_until > NOW())
         ''', (username, username))
         shared = [(r[0], r[1], r[2], 'shared') for r in cur.fetchall()]
 
@@ -221,11 +224,12 @@ def get_project_owner(project_name, username):
         row = cur.fetchone()
         if row:
             return row[0]
-        # Directly shared with this user
+        # Directly shared with this user (not expired)
         cur.execute("""
             SELECT cp.owner FROM custom_projects cp
             JOIN project_shares ps ON cp.name = ps.project_name AND cp.owner = ps.project_owner
             WHERE cp.name = %s AND ps.shared_with = %s
+              AND (ps.valid_until IS NULL OR ps.valid_until > NOW())
         """, (project_name, username))
         row = cur.fetchone()
         if row:
@@ -251,7 +255,8 @@ def get_user_permissions(project_name, project_owner, username):
         cur = conn.cursor()
         cur.execute(
             "SELECT permissions FROM project_shares "
-            "WHERE project_name = %s AND project_owner = %s AND shared_with = %s",
+            "WHERE project_name = %s AND project_owner = %s AND shared_with = %s"
+            "  AND (valid_until IS NULL OR valid_until > NOW())",
             (project_name, project_owner, username),
         )
         row = cur.fetchone()
@@ -271,13 +276,13 @@ def get_user_permissions(project_name, project_owner, username):
 
 # ─── Sharing ─────────────────────────────────────────────────────────────────
 
-def share_project_with_user(project_name, project_owner, shared_with, permissions="documents,chats"):
+def share_project_with_user(project_name, project_owner, shared_with, permissions="documents,chats", valid_until=None):
     with _conn() as conn:
         conn.cursor().execute(
-            'INSERT INTO project_shares (project_name, project_owner, shared_with, permissions) '
-            'VALUES (%s, %s, %s, %s) ON CONFLICT (project_name, project_owner, shared_with) '
-            'DO UPDATE SET permissions = EXCLUDED.permissions',
-            (project_name, project_owner, shared_with, permissions),
+            'INSERT INTO project_shares (project_name, project_owner, shared_with, permissions, valid_until) '
+            'VALUES (%s, %s, %s, %s, %s) ON CONFLICT (project_name, project_owner, shared_with) '
+            'DO UPDATE SET permissions = EXCLUDED.permissions, valid_until = EXCLUDED.valid_until',
+            (project_name, project_owner, shared_with, permissions, valid_until),
         )
 
 def update_share_permissions(project_name, project_owner, shared_with, permissions):
@@ -300,7 +305,7 @@ def get_project_shares(project_name, project_owner):
     with _conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            'SELECT shared_with, permissions FROM project_shares '
+            'SELECT shared_with, permissions, valid_until FROM project_shares '
             'WHERE project_name = %s AND project_owner = %s',
             (project_name, project_owner),
         )
@@ -308,6 +313,7 @@ def get_project_shares(project_name, project_owner):
             {
                 "username": r[0],
                 "permissions": [p.strip() for p in (r[1] or "documents,chats").split(",") if p.strip()],
+                "valid_until": r[2].isoformat() if r[2] else None,
             }
             for r in cur.fetchall()
         ]
@@ -461,6 +467,31 @@ def get_metadata_for_file(file_path):
             "file_name": file_name,
             "owner":     row[1] if row else "Unknown",
         }
+
+def set_file_version(file_name: str, project: str, owner: str, version: str):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE file_metadata SET version = %s '
+            'WHERE file_name = %s AND project_tag = %s AND owner = %s',
+            (version.strip() or None, file_name, project, owner),
+        )
+
+def list_files_with_versions(project: str, owner: str) -> list[dict]:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT file_name, version, upload_date FROM file_metadata '
+            'WHERE project_tag = %s AND owner = %s ORDER BY upload_date',
+            (project, owner),
+        )
+        return [
+            {
+                "file_name":   r[0],
+                "version":     r[1],
+                "upload_date": r[2].isoformat() if r[2] else None,
+            }
+            for r in cur.fetchall()
+        ]
 
 
 # ─── System ──────────────────────────────────────────────────────────────────

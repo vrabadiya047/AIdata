@@ -12,6 +12,7 @@ export default function Home() {
   const [activeProject, setActiveProject] = useState('');
   const [activeThread, setActiveThread] = useState('General');
   const [showDocs, setShowDocs] = useState(false);
+  const [wsRefreshKey, setWsRefreshKey] = useState(0);
 
   return (
     <div
@@ -28,6 +29,7 @@ export default function Home() {
         <Sidebar
           activeProject={activeProject}
           activeThread={activeThread}
+          wsRefreshKey={wsRefreshKey}
           onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); }}
           onSelectThread={setActiveThread}
           onOpenDocs={() => setShowDocs(true)}
@@ -63,6 +65,13 @@ export default function Home() {
             activeThread={activeThread}
             username={session?.username ?? ''}
             onNewThread={(t) => setActiveThread(t)}
+            onRenameProject={(oldName, newName) => {
+              setActiveProject(newName);
+              setWsRefreshKey(k => k + 1);
+            }}
+            onRenameThread={(_oldId, newId) => {
+              setActiveThread(newId);
+            }}
           />
         </ErrorBoundary>
       </main>

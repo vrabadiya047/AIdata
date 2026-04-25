@@ -213,6 +213,8 @@ def index_file(file_path: str, username: str, project: str):
         nodes = _build_node_parser().get_nodes_from_documents(docs)
         VectorStoreIndex(nodes, storage_context=sc, show_progress=False)
         print(f"✅ Indexed {os.path.basename(file_path)} ({len(nodes)} chunks) → {_collection(username)}/{project}")
+        from .graph import index_nodes_in_graph
+        index_nodes_in_graph(nodes, username, project)
 
 
 def _bulk_index_directory(target_dir: str, username: str, project: str | None):
@@ -284,6 +286,8 @@ def delete_project_index(username: str, project: str):
         )
     except Exception as e:
         print(f"⚠️  Qdrant project delete failed for {project}: {e}")
+    from .graph import delete_project_from_graph
+    delete_project_from_graph(username, project)
 
 
 # ── Query engine ──────────────────────────────────────────────────────────────
@@ -350,6 +354,70 @@ def get_query_engine(streaming=True, project_filter=None, mode="chat", username=
         return None
 
 
+def get_file_chunks(username: str, project: str, file_name: str, limit: int = 40) -> list[str]:
+    """Fetch all indexed text chunks for a specific file from Qdrant (used by diff)."""
+    import json as _json
+    client = _qdrant_client()
+    coll   = _collection(username)
+    try:
+        results, _ = client.scroll(
+            collection_name=coll,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="project_name", match=MatchValue(value=project)),
+                FieldCondition(key="file_name",    match=MatchValue(value=file_name)),
+            ]),
+            limit=limit,
+            with_payload=True,
+        )
+    except Exception as exc:
+        print(f"⚠️  get_file_chunks failed: {exc}")
+        return []
+    texts = []
+    for point in results:
+        payload = point.payload or {}
+        node_json = payload.get("_node_content", "")
+        if node_json:
+            try:
+                text = _json.loads(node_json).get("text", "")
+                if text:
+                    texts.append(text)
+                    continue
+            except Exception:
+                pass
+        text = str(payload.get("text", "")).strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
+def get_agent_engine(project_filter=None, username=None):
+    """Return a ReActAgent (llama-index 0.12+ workflow API) bound to the user/project.
+
+    Uses the new constructor style (no from_tools). The returned agent is run via
+    `handler = agent.run(prompt)` and iterated with `async for e in handler.stream_events()`.
+    """
+    try:
+        from llama_index.core.agent import ReActAgent
+        from .tools import make_rag_tool, calculate_tool, price_tool
+
+        retriever, postprocessors, _ = get_query_components(
+            project_filter=project_filter, username=username
+        )
+        if retriever is None:
+            return None
+
+        rag_tool = make_rag_tool(retriever, postprocessors or [])
+        agent = ReActAgent(
+            tools=[rag_tool, calculate_tool, price_tool],
+            llm=Settings.llm,
+            verbose=False,
+        )
+        return agent
+    except Exception as exc:
+        print(f"⚠️  Agent engine creation failed: {exc}")
+        return None
+
+
 def get_query_components(project_filter=None, username=None):
     """Return (retriever, postprocessors, synthesizer) for two-phase streaming.
 
@@ -357,11 +425,23 @@ def get_query_components(project_filter=None, username=None):
     soon as Qdrant + reranker finish (phase 1) and then stream LLM tokens while
     the user is already reading which documents were consulted (phase 2).
 
+    When SOVEREIGN_GRAPH_ENABLED=1 the retriever is a HybridGraphVectorRetriever
+    that merges Qdrant vector results with Neo4j graph traversal, enabling
+    multi-hop relationship queries across engineering documents.
+
     Returns (None, None, None) when no index exists for the user/project.
     """
     engine = get_query_engine(streaming=True, project_filter=project_filter, username=username)
     if engine is None:
         return None, None, None
+
+    from .graph import is_enabled, get_graph_retriever, HybridGraphVectorRetriever
+    if is_enabled():
+        graph_retriever = get_graph_retriever(username, project_filter)
+        if graph_retriever is not None:
+            retriever = HybridGraphVectorRetriever(engine.retriever, graph_retriever)
+            return retriever, engine._node_postprocessors, engine._response_synthesizer
+
     # .retriever is the public property; _node_postprocessors and
     # _response_synthesizer are private but stable across llama-index-core 0.10+.
     return engine.retriever, engine._node_postprocessors, engine._response_synthesizer

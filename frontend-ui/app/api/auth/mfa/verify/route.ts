@@ -4,30 +4,23 @@ import { createSession } from '@/lib/session';
 const BACKEND = 'http://127.0.0.1:8000';
 
 export async function POST(req: NextRequest) {
-  const { username, password } = await req.json();
-
-  const res = await fetch(`${BACKEND}/api/auth/login`, {
+  const body = await req.json();
+  const res = await fetch(`${BACKEND}/api/auth/mfa/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
-    return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    const err = await res.json().catch(() => ({ detail: 'Invalid code' }));
+    return NextResponse.json({ error: err.detail ?? 'Invalid code' }, { status: res.status });
   }
 
   const data = await res.json();
-
-  // MFA required — return pending token to client without creating a session yet.
-  if (data.mfa_required) {
-    return NextResponse.json({ mfa_required: true, mfa_token: data.mfa_token });
-  }
-
   await createSession({ username: data.username, role: data.role });
   return NextResponse.json({
     username: data.username,
     role: data.role,
     requires_change: data.requires_change,
-    mfa_required: false,
   });
 }

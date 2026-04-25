@@ -21,7 +21,12 @@ def init_auth_db():
                 requires_change INTEGER DEFAULT 1
             )
         ''')
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_change INTEGER DEFAULT 0")
+        for migration in [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_change INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret TEXT DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled INTEGER DEFAULT 0",
+        ]:
+            cur.execute(migration)
 
 
 def generate_temp_password():
@@ -97,11 +102,91 @@ def verify_user(username, password):
         return False, None, False
 
 
+def get_user_info(username: str) -> dict | None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT role, requires_change, mfa_enabled FROM users WHERE username = %s',
+            (username,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"role": row[0], "requires_change": bool(row[1]), "mfa_enabled": bool(row[2])}
+
+
 def get_all_users():
     with _conn() as conn:
         cur = conn.cursor()
-        cur.execute('SELECT id, username, role FROM users ORDER BY role ASC')
+        cur.execute('SELECT id, username, role, mfa_enabled FROM users ORDER BY role ASC')
         return cur.fetchall()
+
+
+# ─── MFA (TOTP) ───────────────────────────────────────────────────────────────
+
+def mfa_generate_secret(username: str) -> str:
+    """Create a fresh TOTP secret for the user. MFA stays disabled until confirmed."""
+    import pyotp
+    secret = pyotp.random_base32()
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE users SET mfa_secret = %s, mfa_enabled = 0 WHERE username = %s',
+            (secret, username),
+        )
+    return secret
+
+
+def mfa_provisioning_uri(username: str, secret: str, issuer: str = "Sovereign AI") -> str:
+    import pyotp
+    return pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name=issuer)
+
+
+def mfa_confirm(username: str, code: str) -> bool:
+    """Verify the first TOTP code and activate MFA for the user."""
+    import pyotp
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT mfa_secret FROM users WHERE username = %s', (username,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return False
+        if pyotp.TOTP(row[0]).verify(code, valid_window=1):
+            conn.cursor().execute(
+                'UPDATE users SET mfa_enabled = 1 WHERE username = %s', (username,)
+            )
+            return True
+        return False
+
+
+def mfa_verify(username: str, code: str) -> bool:
+    """Verify a TOTP code during the login second factor."""
+    import pyotp
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT mfa_secret FROM users WHERE username = %s AND mfa_enabled = 1',
+            (username,),
+        )
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return False
+        return pyotp.TOTP(row[0]).verify(code, valid_window=1)
+
+
+def mfa_is_enabled(username: str) -> bool:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT mfa_enabled FROM users WHERE username = %s', (username,))
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+
+def mfa_disable(username: str):
+    with _conn() as conn:
+        conn.cursor().execute(
+            'UPDATE users SET mfa_enabled = 0, mfa_secret = NULL WHERE username = %s',
+            (username,),
+        )
 
 
 def delete_user(username):

@@ -5,10 +5,10 @@ import { useRouter } from 'next/navigation';
 import { useSession } from '@/contexts/SessionContext';
 import {
   Shield, Plus, Trash2, RefreshCw, ArrowLeft,
-  Users, Activity, Eye, FileText, Search, Hash,
+  Users, Activity, Eye, FileText, Search, Hash, Smartphone,
 } from 'lucide-react';
 
-interface User { id: number; username: string; role: string; }
+interface User { id: number; username: string; role: string; mfa_enabled: boolean; }
 interface AuditEntry { [key: string]: string | number; }
 
 interface PrivacySummary {
@@ -233,6 +233,12 @@ export default function AdminPage() {
     await loadUsers();
   }
 
+  async function resetMFA(username: string) {
+    if (!confirm(`Reset MFA for ${username}? They will need to re-enroll.`)) return;
+    await fetch(`/api/admin/users/${encodeURIComponent(username)}/mfa`, { method: 'DELETE' });
+    await loadUsers();
+  }
+
   if (loading || session?.role !== 'Admin') return null;
 
   const tabs = [
@@ -323,8 +329,24 @@ export default function AdminPage() {
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '14px', color: 'var(--t1)', fontWeight: 500 }}>{u.username}</div>
-                    <div className="font-mono" style={{ fontSize: '10px', color: 'var(--t3)', letterSpacing: '0.06em' }}>{u.role}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+                      <span className="font-mono" style={{ fontSize: '10px', color: 'var(--t3)', letterSpacing: '0.06em' }}>{u.role}</span>
+                      {u.mfa_enabled ? (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '3px', fontSize: '9px', padding: '1px 6px', borderRadius: '4px', background: 'rgba(34,197,94,0.10)', border: '1px solid rgba(34,197,94,0.2)', color: '#22c55e', fontFamily: 'monospace' }}>
+                          <Smartphone size={9} /> 2FA ON
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '9px', padding: '1px 6px', borderRadius: '4px', background: 'rgba(107,114,128,0.1)', border: '1px solid rgba(107,114,128,0.15)', color: 'var(--t3)', fontFamily: 'monospace' }}>
+                          NO 2FA
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  {u.mfa_enabled && (
+                    <button onClick={() => resetMFA(u.username)} title="Reset MFA" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t3)', padding: '4px', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>
+                      <Smartphone size={12} />
+                    </button>
+                  )}
                   <button onClick={() => deleteUser(u.username)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t3)', padding: '4px', borderRadius: '4px' }}>
                     <Trash2 size={13} />
                   </button>

@@ -13,6 +13,7 @@ import re
 import uuid
 from src.engine import (
     get_query_engine,
+    get_query_components,
     index_file, remove_file_from_index, rename_project_index, delete_project_index,
 )
 from src.database import (
@@ -35,27 +36,70 @@ from src.manager import (
 )
 from src.privacy import shield
 from src.logger import log_query
-from src.auth import verify_user, add_user, delete_user, get_all_users, update_user_password, check_and_create_default_admin
+from src.auth import (
+    verify_user, add_user, delete_user, get_all_users, update_user_password,
+    check_and_create_default_admin, get_user_info,
+    mfa_generate_secret, mfa_provisioning_uri, mfa_confirm,
+    mfa_verify, mfa_is_enabled, mfa_disable,
+)
 from src.analytics import get_audit_trail
 from src.config import DATA_DIR, LOG_DIR
 
-_DEFAULT_SECRET = "sovereign-dev-secret-2026-change-in-prod"
-JWT_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET", _DEFAULT_SECRET)
+_ENV_SECRET = os.environ.get("SOVEREIGN_JWT_SECRET")
+_FALLBACK_SECRET = "sovereign-test-secret-not-for-production"
+JWT_SECRET = _ENV_SECRET or _FALLBACK_SECRET
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 8
+MFA_PENDING_MINUTES = 5
+
+
+def _start_worker():
+    """Background indexing worker — runs as a daemon thread alongside the API server."""
+    import time as _time
+    from src.database import claim_next_job, mark_job_done, mark_job_failed
+    poll = int(os.environ.get("WORKER_POLL_INTERVAL", "2"))
+    print(f"[worker] Started (embedded). Polling every {poll}s.", flush=True)
+    while True:
+        try:
+            job = claim_next_job()
+            if job is None:
+                _time.sleep(poll)
+                continue
+            print(f"[worker] Processing {job['file_path']}", flush=True)
+            index_file(job["file_path"], job["username"], job["project"])
+            mark_job_done(job["id"])
+            print(f"[worker] Done {job['id']}", flush=True)
+        except Exception as exc:
+            try:
+                mark_job_failed(job["id"], str(exc))
+            except Exception:
+                pass
+            print(f"[worker] Error: {exc}", flush=True)
+            _time.sleep(poll)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if JWT_SECRET == _DEFAULT_SECRET:
+    is_production = os.environ.get("SOVEREIGN_ENV", "").lower() == "production"
+    if not _ENV_SECRET:
+        if is_production:
+            raise RuntimeError(
+                "SOVEREIGN_JWT_SECRET environment variable is not set. "
+                "Refusing to start in production without a secure secret."
+            )
         print(
             "\n⚠️  SOVEREIGN SECURITY WARNING ──────────────────────────────\n"
-            "   JWT secret is set to the insecure development default.\n"
-            "   Set SOVEREIGN_JWT_SECRET env var before production deployment.\n"
+            "   SOVEREIGN_JWT_SECRET is not set.\n"
+            "   Running with an insecure fallback — NOT safe for production.\n"
+            "   Set SOVEREIGN_ENV=production to enforce this check at startup.\n"
             "─────────────────────────────────────────────────────────────\n"
         )
     init_db()
     check_and_create_default_admin()
+
+    import threading
+    threading.Thread(target=_start_worker, daemon=True, name="indexing-worker").start()
+
     yield
 
 
@@ -85,6 +129,12 @@ def safe_filename(filename: str) -> str:
 def create_token(username: str, role: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
     return jwt.encode({"sub": username, "role": role, "exp": expire}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def create_pending_mfa_token(username: str) -> str:
+    """Short-lived token issued after correct password but before TOTP is verified.
+    Accepted ONLY by /api/auth/mfa/verify — does not grant any other access."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=MFA_PENDING_MINUTES)
+    return jwt.encode({"sub": username, "mfa_pending": True, "exp": expire}, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -127,15 +177,19 @@ async def login(data: LoginRequest):
     valid, role, requires_change = verify_user(data.username, data.password)
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if mfa_is_enabled(data.username):
+        pending = create_pending_mfa_token(data.username)
+        return JSONResponse({"mfa_required": True, "mfa_token": pending})
+
     token = create_token(data.username, role)
-    response = JSONResponse({"username": data.username, "role": role, "requires_change": requires_change})
+    response = JSONResponse({
+        "username": data.username, "role": role,
+        "requires_change": requires_change, "mfa_required": False,
+    })
     response.set_cookie(
-        key="sovereign_session",
-        value=token,
-        httponly=True,
-        max_age=JWT_EXPIRE_HOURS * 3600,
-        samesite="lax",
-        path="/",
+        key="sovereign_session", value=token,
+        httponly=True, max_age=JWT_EXPIRE_HOURS * 3600, samesite="lax", path="/",
     )
     return response
 
@@ -147,7 +201,8 @@ async def logout():
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return user
+    info = get_user_info(user["username"])
+    return {**user, "mfa_enabled": info["mfa_enabled"] if info else False}
 
 class ChangePasswordRequest(BaseModel):
     new_password: str
@@ -156,6 +211,78 @@ class ChangePasswordRequest(BaseModel):
 async def change_password(data: ChangePasswordRequest, user: dict = Depends(get_current_user)):
     update_user_password(user["username"], data.new_password)
     return {"status": "password updated"}
+
+
+# ─── MFA (TOTP) ───────────────────────────────────────────────────────────────
+
+class MFAVerifyRequest(BaseModel):
+    code: str
+    mfa_token: str
+
+class MFAConfirmRequest(BaseModel):
+    code: str
+
+@app.post("/api/auth/mfa/verify")
+async def mfa_verify_endpoint(data: MFAVerifyRequest):
+    """Second-factor login: validate pending token + TOTP code, issue full session."""
+    try:
+        payload = decode_token(data.mfa_token)
+        if not payload.get("mfa_pending"):
+            raise HTTPException(status_code=400, detail="Invalid token type")
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=400, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="MFA token expired or invalid")
+
+    if not mfa_verify(username, data.code):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+
+    info = get_user_info(username)
+    if info is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    token = create_token(username, info["role"])
+    response = JSONResponse({
+        "username": username, "role": info["role"],
+        "requires_change": info["requires_change"], "mfa_required": False,
+    })
+    response.set_cookie(
+        key="sovereign_session", value=token,
+        httponly=True, max_age=JWT_EXPIRE_HOURS * 3600, samesite="lax", path="/",
+    )
+    return response
+
+@app.get("/api/auth/mfa/setup")
+async def mfa_setup(user: dict = Depends(get_current_user)):
+    """Generate a TOTP secret and QR code. MFA stays disabled until confirmed."""
+    import qrcode, io, base64 as _b64
+    secret = mfa_generate_secret(user["username"])
+    uri    = mfa_provisioning_uri(user["username"], secret)
+    img    = qrcode.make(uri)
+    buf    = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_data_uri = "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode()
+    return {"secret": secret, "uri": uri, "qr": qr_data_uri}
+
+@app.post("/api/auth/mfa/confirm")
+async def mfa_confirm_endpoint(data: MFAConfirmRequest, user: dict = Depends(get_current_user)):
+    """Verify the first TOTP code and activate MFA."""
+    if not mfa_confirm(user["username"], data.code):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code — try again")
+    return {"status": "mfa_enabled"}
+
+@app.delete("/api/auth/mfa")
+async def mfa_disable_self(user: dict = Depends(get_current_user)):
+    """Let an authenticated user disable their own MFA."""
+    mfa_disable(user["username"])
+    return {"status": "mfa_disabled"}
+
+@app.delete("/api/admin/users/{username}/mfa")
+async def admin_mfa_reset(username: str, admin: dict = Depends(require_admin)):
+    """Admin: reset MFA for any user (e.g. lost authenticator)."""
+    mfa_disable(username)
+    return {"status": "mfa_reset"}
 
 
 # ─── Workspaces ───────────────────────────────────────────────────────────────
@@ -442,7 +569,7 @@ async def delete_snapshot_endpoint(snap_id: str, user: dict = Depends(get_curren
 @app.get("/api/admin/users")
 async def admin_get_users(admin: dict = Depends(require_admin)):
     rows = get_all_users()
-    return {"users": [{"id": r[0], "username": r[1], "role": r[2]} for r in rows]}
+    return {"users": [{"id": r[0], "username": r[1], "role": r[2], "mfa_enabled": bool(r[3])} for r in rows]}
 
 class AddUserRequest(BaseModel):
     username: str
@@ -483,6 +610,36 @@ class QueryRequest(BaseModel):
     username: str
     thread_id: str = "General"
 
+def _extract_sources(nodes) -> list:
+    """Build the sources list from a list of NodeWithScore objects."""
+    sources = []
+    seen: set[tuple] = set()
+    for sn in nodes:
+        meta = getattr(sn.node, 'metadata', {}) or {}
+        fname = (
+            meta.get("file_name") or
+            meta.get("filename") or
+            (meta.get("file_path", "").replace("\\", "/").split("/")[-1]) or
+            "Unknown"
+        )
+        raw_page = meta.get("page_label") or meta.get("page")
+        try:
+            page = int(raw_page) if raw_page is not None else None
+        except (ValueError, TypeError):
+            page = None
+        key = (fname, page)
+        if fname and key not in seen:
+            seen.add(key)
+            text = getattr(sn.node, 'text', '') or ''
+            sources.append({
+                "file": fname,
+                "page": page,
+                "score": round(float(sn.score or 0), 3),
+                "excerpt": text[:280].strip(),
+            })
+    return sources
+
+
 @app.post("/api/query")
 async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     safe_prompt = shield.redact_and_log(
@@ -496,48 +653,46 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
         if "documents" not in perms and "query" not in perms:
             raise HTTPException(status_code=403, detail="You don't have query permission on this workspace.")
 
-    # NOTE: LlamaIndex calls asyncio.get_event_loop() internally — cannot run in to_thread
-    engine = get_query_engine(project_filter=data.project, username=owner)
-
-    if not engine:
+    # NOTE: LlamaIndex calls asyncio.get_event_loop() internally — cannot run in to_thread.
+    # get_query_components() returns (retriever, postprocessors, synthesizer) so we can
+    # emit source citations before synthesis starts, building trust while text streams in.
+    retriever, postprocessors, synthesizer = get_query_components(
+        project_filter=data.project, username=owner
+    )
+    if retriever is None:
         raise HTTPException(status_code=404, detail="Workspace index not found.")
 
     save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
 
-    response = engine.query(safe_prompt)
-
     async def generate_tokens():
+        from llama_index.core.schema import QueryBundle
+        query_bundle = QueryBundle(safe_prompt)
         full_response = ""
 
-        # Emit source citations before any tokens so the UI can show them immediately
-        if hasattr(response, 'source_nodes') and response.source_nodes:
-            sources = []
-            seen: set[tuple] = set()
-            for sn in response.source_nodes:
-                meta = getattr(sn.node, 'metadata', {}) or {}
-                fname = (
-                    meta.get("file_name") or
-                    meta.get("filename") or
-                    (meta.get("file_path", "").replace("\\", "/").split("/")[-1]) or
-                    "Unknown"
-                )
-                raw_page = meta.get("page_label") or meta.get("page")
-                try:
-                    page = int(raw_page) if raw_page is not None else None
-                except (ValueError, TypeError):
-                    page = None
-                key = (fname, page)
-                if fname and key not in seen:
-                    seen.add(key)
-                    text = getattr(sn.node, 'text', '') or ''
-                    sources.append({
-                        "file": fname,
-                        "page": page,
-                        "score": round(float(sn.score or 0), 3),
-                        "excerpt": text[:280].strip(),
-                    })
+        # ── Phase 1: retrieve + rerank (synchronous, ~1-3 s) ─────────────────
+        # HTTP 200 headers are already sent; sources arrive before any LLM token.
+        nodes = []
+        try:
+            nodes = retriever.retrieve(safe_prompt)
+            for pp in postprocessors:
+                nodes = pp.postprocess_nodes(nodes, query_bundle=query_bundle)
+        except Exception as e:
+            print(f"⚠️  Retrieval error: {e}")
+
+        # ── Phase 2: emit sources immediately ─────────────────────────────────
+        if nodes:
+            sources = _extract_sources(nodes)
             if sources:
                 yield f"data: {json.dumps({'sources': sources})}\n\n"
+
+        # ── Phase 3: synthesize + stream tokens ───────────────────────────────
+        try:
+            response = synthesizer.synthesize(query=query_bundle, nodes=nodes)
+        except Exception as e:
+            err = f" [Synthesis error: {e}]"
+            yield f"data: {json.dumps({'token': err})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         if not hasattr(response, 'response_gen') or response.response_gen is None:
             static_text = str(response)

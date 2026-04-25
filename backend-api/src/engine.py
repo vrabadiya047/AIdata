@@ -2,6 +2,7 @@
 import os
 import re
 import traceback
+from datetime import date as _date
 from typing import Optional, Any, List, cast
 
 if os.environ.get("SOVEREIGN_OFFLINE_MODE") == "1":
@@ -104,22 +105,49 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from .privacy import shield
 from .image_reader import get_image_file_extractor
-from .config import DATA_DIR, QDRANT_URL, QDRANT_API_KEY, setup_ai_settings, _local_model_path, RERANK_MODEL
+from llama_index.core import Settings
+from .config import (
+    DATA_DIR, QDRANT_URL, QDRANT_API_KEY, setup_ai_settings, _local_model_path,
+    RERANK_MODEL, CHUNK_SIZE, CHUNK_OVERLAP, SEMANTIC_CHUNK_THRESHOLD,
+)
 from src.database import get_metadata_for_file
 
 setup_ai_settings()
 
+
+def _build_node_parser():
+    """Return a SemanticSplitterNodeParser, falling back to SentenceSplitter.
+
+    Semantic chunking finds natural topic boundaries via embedding similarity
+    instead of cutting at a fixed token count.  This avoids splitting formulas,
+    code blocks, or multi-sentence definitions mid-thought.
+    """
+    try:
+        from llama_index.core.node_parser import SemanticSplitterNodeParser
+        return SemanticSplitterNodeParser(
+            buffer_size=1,
+            breakpoint_percentile_threshold=SEMANTIC_CHUNK_THRESHOLD,
+            embed_model=Settings.embed_model,
+        )
+    except Exception:
+        from llama_index.core.node_parser import SentenceSplitter
+        return SentenceSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+
+_TODAY = _date.today().strftime("%B %d, %Y")
+
 SOVEREIGN_PROMPT = PromptTemplate(
-    "You are a Sovereign Infrastructure AI.\n"
-    "You must answer the user's question using ONLY the context provided below.\n"
-    "If the context is completely empty, or if the answer cannot be found in the context, "
-    "you MUST explicitly reply with: 'I cannot find the answer to this in the currently uploaded documents.'\n"
-    "Do NOT leave your response blank under any circumstances.\n"
+    "You are a Sovereign Infrastructure AI assistant. Today's date is " + _TODAY + ".\n"
+    "Use the context below to answer the user's question. "
+    "You may explain, summarize, describe, calculate, or elaborate on information found in the context.\n"
+    "When asked about ages, durations, or time differences, calculate them using today's date.\n"
+    "Only reply with 'I cannot find the answer to this in the currently uploaded documents.' "
+    "if the context is completely empty or contains nothing relevant to the question.\n"
+    "Do NOT use that phrase if the context contains any relevant information — use it instead.\n"
     "---------------------\n"
     "Context:\n{context_str}\n"
     "---------------------\n"
     "Question: {query_str}\n"
-    "Technical Answer:"
+    "Answer:"
 )
 
 # ── Qdrant singleton ──────────────────────────────────────────────────────────
@@ -183,8 +211,9 @@ def index_file(file_path: str, username: str, project: str):
         ))
 
     if docs:
-        VectorStoreIndex.from_documents(docs, storage_context=sc, show_progress=False)
-        print(f"✅ Indexed {os.path.basename(file_path)} → {_collection(username)}/{project}")
+        nodes = _build_node_parser().get_nodes_from_documents(docs)
+        VectorStoreIndex(nodes, storage_context=sc, show_progress=False)
+        print(f"✅ Indexed {os.path.basename(file_path)} ({len(nodes)} chunks) → {_collection(username)}/{project}")
 
 
 def _bulk_index_directory(target_dir: str, username: str, project: str | None):
@@ -212,8 +241,9 @@ def _bulk_index_directory(target_dir: str, username: str, project: str | None):
         doc.set_content(shield.redact(doc.get_content()))
 
     if docs:
-        VectorStoreIndex.from_documents(docs, storage_context=sc, show_progress=False)
-        print(f"✅ Bulk indexed {len(docs)} chunks from {target_dir}")
+        nodes = _build_node_parser().get_nodes_from_documents(docs)
+        VectorStoreIndex(nodes, storage_context=sc, show_progress=False)
+        print(f"✅ Bulk indexed {len(nodes)} chunks from {target_dir}")
 
 
 def remove_file_from_index(file_name: str, username: str, project: str):
@@ -319,3 +349,20 @@ def get_query_engine(streaming=True, project_filter=None, mode="chat", username=
         print(f"\n❌ FATAL ENGINE ERROR: {e}")
         traceback.print_exc()
         return None
+
+
+def get_query_components(project_filter=None, username=None):
+    """Return (retriever, postprocessors, synthesizer) for two-phase streaming.
+
+    Separating retrieval from synthesis lets the caller emit source citations as
+    soon as Qdrant + reranker finish (phase 1) and then stream LLM tokens while
+    the user is already reading which documents were consulted (phase 2).
+
+    Returns (None, None, None) when no index exists for the user/project.
+    """
+    engine = get_query_engine(streaming=True, project_filter=project_filter, username=username)
+    if engine is None:
+        return None, None, None
+    # .retriever is the public property; _node_postprocessors and
+    # _response_synthesizer are private but stable across llama-index-core 0.10+.
+    return engine.retriever, engine._node_postprocessors, engine._response_synthesizer

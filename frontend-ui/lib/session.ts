@@ -1,8 +1,15 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { cookies } from 'next/headers';
 
+const _envSecret = process.env.SOVEREIGN_JWT_SECRET;
+if (!_envSecret && process.env.NODE_ENV === 'production') {
+  throw new Error(
+    'SOVEREIGN_JWT_SECRET environment variable is not set. ' +
+    'Refusing to start in production without a secure secret.'
+  );
+}
 const SECRET = new TextEncoder().encode(
-  process.env.SOVEREIGN_JWT_SECRET ?? 'sovereign-dev-secret-2026-change-in-prod'
+  _envSecret ?? 'sovereign-test-secret-not-for-production'
 );
 
 const COOKIE = 'sovereign_session';

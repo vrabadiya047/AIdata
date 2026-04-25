@@ -15,7 +15,7 @@ from llama_index.core import (
 )
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
-from llama_index.readers.file import PyMuPDFReader
+from .image_reader import get_image_file_extractor, OCRPDFReader
 from llama_index.postprocessor.sbert_rerank import SentenceTransformerRerank
 from llama_index.vector_stores.qdrant import QdrantVectorStore as _QdrantVectorStore
 from pydantic import BaseModel as _PydanticBaseModel
@@ -104,7 +104,6 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from .privacy import shield
-from .image_reader import get_image_file_extractor
 from llama_index.core import Settings
 from .config import (
     DATA_DIR, QDRANT_URL, QDRANT_API_KEY, setup_ai_settings, _local_model_path,
@@ -195,7 +194,7 @@ def index_file(file_path: str, username: str, project: str):
     try:
         reader = SimpleDirectoryReader(
             input_files=[file_path],
-            file_extractor={".pdf": PyMuPDFReader(), **get_image_file_extractor()},
+            file_extractor={".pdf": OCRPDFReader(), **get_image_file_extractor()},
             file_metadata=safe_get_metadata,
         )
         docs = reader.load_data()
@@ -225,7 +224,7 @@ def _bulk_index_directory(target_dir: str, username: str, project: str | None):
         reader = SimpleDirectoryReader(
             input_dir=target_dir,
             recursive=True,
-            file_extractor={".pdf": PyMuPDFReader(), **get_image_file_extractor()},
+            file_extractor={".pdf": OCRPDFReader(), **get_image_file_extractor()},
             file_metadata=safe_get_metadata,
         )
         docs = reader.load_data()

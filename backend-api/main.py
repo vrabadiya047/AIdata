@@ -685,6 +685,17 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
             if sources:
                 yield f"data: {json.dumps({'sources': sources})}\n\n"
 
+        # ── Phase 2.5: inject Python-computed facts for quantitative questions ──
+        try:
+            from src.compute import enrich_context
+            from llama_index.core.schema import TextNode, NodeWithScore
+            node_texts = [str(n.node.get_content()) for n in nodes if n.node]
+            computed = enrich_context(safe_prompt, node_texts)
+            if computed:
+                nodes = [NodeWithScore(node=TextNode(text=computed), score=1.0)] + nodes
+        except Exception as _ce:
+            print(f"⚠️  Compute enrichment skipped: {_ce}")
+
         # ── Phase 3: synthesize + stream tokens ───────────────────────────────
         try:
             response = synthesizer.synthesize(query=query_bundle, nodes=nodes)

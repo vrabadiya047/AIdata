@@ -11,6 +11,8 @@ import os
 import io
 import re
 import uuid
+from fastapi.concurrency import run_in_threadpool
+from src import adb
 from src.engine import (
     get_query_engine,
     get_query_components,
@@ -174,11 +176,11 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/auth/login")
 async def login(data: LoginRequest):
-    valid, role, requires_change = verify_user(data.username, data.password)
+    valid, role, requires_change = await adb.verify_user(data.username, data.password)
     if not valid:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    if mfa_is_enabled(data.username):
+    if await adb.mfa_is_enabled(data.username):
         pending = create_pending_mfa_token(data.username)
         return JSONResponse({"mfa_required": True, "mfa_token": pending})
 
@@ -201,7 +203,7 @@ async def logout():
 
 @app.get("/api/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    info = get_user_info(user["username"])
+    info = await adb.get_user_info(user["username"])
     return {**user, "mfa_enabled": info["mfa_enabled"] if info else False}
 
 class ChangePasswordRequest(BaseModel):
@@ -209,7 +211,7 @@ class ChangePasswordRequest(BaseModel):
 
 @app.post("/api/auth/change-password")
 async def change_password(data: ChangePasswordRequest, user: dict = Depends(get_current_user)):
-    update_user_password(user["username"], data.new_password)
+    await adb.update_user_password(user["username"], data.new_password)
     return {"status": "password updated"}
 
 
@@ -235,10 +237,10 @@ async def mfa_verify_endpoint(data: MFAVerifyRequest):
     except JWTError:
         raise HTTPException(status_code=401, detail="MFA token expired or invalid")
 
-    if not mfa_verify(username, data.code):
+    if not await adb.mfa_verify(username, data.code):
         raise HTTPException(status_code=401, detail="Invalid authenticator code")
 
-    info = get_user_info(username)
+    info = await adb.get_user_info(username)
     if info is None:
         raise HTTPException(status_code=401, detail="User not found")
 
@@ -257,8 +259,8 @@ async def mfa_verify_endpoint(data: MFAVerifyRequest):
 async def mfa_setup(user: dict = Depends(get_current_user)):
     """Generate a TOTP secret and QR code. MFA stays disabled until confirmed."""
     import qrcode, io, base64 as _b64
-    secret = mfa_generate_secret(user["username"])
-    uri    = mfa_provisioning_uri(user["username"], secret)
+    secret = await adb.mfa_generate_secret(user["username"])
+    uri    = await adb.mfa_provisioning_uri(user["username"], secret)
     img    = qrcode.make(uri)
     buf    = io.BytesIO()
     img.save(buf, format="PNG")
@@ -268,20 +270,20 @@ async def mfa_setup(user: dict = Depends(get_current_user)):
 @app.post("/api/auth/mfa/confirm")
 async def mfa_confirm_endpoint(data: MFAConfirmRequest, user: dict = Depends(get_current_user)):
     """Verify the first TOTP code and activate MFA."""
-    if not mfa_confirm(user["username"], data.code):
+    if not await adb.mfa_confirm(user["username"], data.code):
         raise HTTPException(status_code=401, detail="Invalid authenticator code — try again")
     return {"status": "mfa_enabled"}
 
 @app.delete("/api/auth/mfa")
 async def mfa_disable_self(user: dict = Depends(get_current_user)):
     """Let an authenticated user disable their own MFA."""
-    mfa_disable(user["username"])
+    await adb.mfa_disable(user["username"])
     return {"status": "mfa_disabled"}
 
 @app.delete("/api/admin/users/{username}/mfa")
 async def admin_mfa_reset(username: str, admin: dict = Depends(require_admin)):
     """Admin: reset MFA for any user (e.g. lost authenticator)."""
-    mfa_disable(username)
+    await adb.mfa_disable(username)
     return {"status": "mfa_reset"}
 
 
@@ -291,7 +293,7 @@ async def admin_mfa_reset(username: str, admin: dict = Depends(require_admin)):
 async def get_workspaces(username: str, user: dict = Depends(get_current_user)):
     if user["username"] != username and user["role"] != "Admin":
         raise HTTPException(status_code=403, detail="Forbidden")
-    projects = get_all_projects(username)
+    projects = await adb.get_all_projects(username)
     return {"workspaces": projects}
 
 class ProjectRequest(BaseModel):
@@ -302,14 +304,14 @@ class ProjectRequest(BaseModel):
 async def create_project(data: ProjectRequest, user: dict = Depends(get_current_user)):
     if user["username"] != data.username and user["role"] != "Admin":
         raise HTTPException(status_code=403, detail="Forbidden")
-    ok = handle_create_project(data.name, data.username)
+    ok = await adb.handle_create_project(data.name, data.username)
     if not ok:
         raise HTTPException(status_code=400, detail="Invalid project name")
     return {"status": "created", "name": data.name}
 
 @app.delete("/api/projects/{name}")
 async def delete_project(name: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
-    handle_delete_project(name, user["username"])
+    await adb.handle_delete_project(name, user["username"])
     background_tasks.add_task(delete_project_index, user["username"], name)
     return {"status": "deleted"}
 
@@ -325,9 +327,9 @@ async def rename_project_endpoint(name: str, data: RenameProjectRequest, user: d
     old_data = os.path.join(DATA_DIR, username, name)
     new_data = os.path.join(DATA_DIR, username, new_name)
     if os.path.exists(old_data):
-        os.rename(old_data, new_data)
-    rename_project_index(username, name, new_name)
-    rename_project(name, new_name, username)
+        await run_in_threadpool(os.rename, old_data, new_data)
+    await run_in_threadpool(rename_project_index, username, name, new_name)
+    await adb.rename_project(name, new_name, username)
     return {"status": "renamed", "name": new_name}
 
 class VisibilityRequest(BaseModel):
@@ -337,7 +339,7 @@ class VisibilityRequest(BaseModel):
 async def update_visibility(name: str, data: VisibilityRequest, user: dict = Depends(get_current_user)):
     if data.visibility not in ("private", "public", "shared"):
         raise HTTPException(status_code=400, detail="Invalid visibility")
-    set_project_visibility(name, user["username"], data.visibility)
+    await adb.set_project_visibility(name, user["username"], data.visibility)
     return {"status": "updated"}
 
 class ShareUserRequest(BaseModel):
@@ -347,17 +349,17 @@ class ShareUserRequest(BaseModel):
 @app.post("/api/projects/{name}/share")
 async def share_with_user(name: str, data: ShareUserRequest, user: dict = Depends(get_current_user)):
     perms_str = ",".join(data.permissions) if data.permissions else "documents,chats"
-    share_project_with_user(name, user["username"], data.shared_with, perms_str)
+    await adb.share_project_with_user(name, user["username"], data.shared_with, perms_str)
     return {"status": "shared"}
 
 @app.delete("/api/projects/{name}/share/{target}")
 async def unshare_from_user(name: str, target: str, user: dict = Depends(get_current_user)):
-    unshare_project_from_user(name, user["username"], target)
+    await adb.unshare_project_from_user(name, user["username"], target)
     return {"status": "unshared"}
 
 @app.get("/api/projects/{name}/shares")
 async def get_shares(name: str, user: dict = Depends(get_current_user)):
-    shares = get_project_shares(name, user["username"])
+    shares = await adb.get_project_shares(name, user["username"])
     return {"shared_with": shares}
 
 class UpdatePermissionsRequest(BaseModel):
@@ -366,7 +368,7 @@ class UpdatePermissionsRequest(BaseModel):
 @app.put("/api/projects/{name}/share/{target}/permissions")
 async def update_permissions(name: str, target: str, data: UpdatePermissionsRequest, user: dict = Depends(get_current_user)):
     perms_str = ",".join(data.permissions) if data.permissions else ""
-    update_share_permissions(name, user["username"], target, perms_str)
+    await adb.update_share_permissions(name, user["username"], target, perms_str)
     return {"status": "updated"}
 
 class ShareGroupRequest(BaseModel):
@@ -375,12 +377,12 @@ class ShareGroupRequest(BaseModel):
 
 @app.post("/api/projects/{name}/share-group")
 async def share_with_group(name: str, data: ShareGroupRequest, user: dict = Depends(get_current_user)):
-    share_project_with_group(name, user["username"], data.group_name, data.group_owner)
+    await adb.share_project_with_group(name, user["username"], data.group_name, data.group_owner)
     return {"status": "shared"}
 
 @app.delete("/api/projects/{name}/share-group/{group_owner}/{group_name}")
 async def unshare_from_group(name: str, group_owner: str, group_name: str, user: dict = Depends(get_current_user)):
-    unshare_project_from_group(name, user["username"], group_name, group_owner)
+    await adb.unshare_project_from_group(name, user["username"], group_name, group_owner)
     return {"status": "unshared"}
 
 
@@ -391,17 +393,17 @@ class GroupRequest(BaseModel):
 
 @app.get("/api/groups")
 async def list_groups(user: dict = Depends(get_current_user)):
-    groups = get_user_groups(user["username"])
+    groups = await adb.get_user_groups(user["username"])
     return {"groups": groups}
 
 @app.post("/api/groups")
 async def create_new_group(data: GroupRequest, user: dict = Depends(get_current_user)):
-    create_group(data.name, user["username"])
+    await adb.create_group(data.name, user["username"])
     return {"status": "created"}
 
 @app.delete("/api/groups/{name}")
 async def remove_group(name: str, user: dict = Depends(get_current_user)):
-    delete_group(name, user["username"])
+    await adb.delete_group(name, user["username"])
     return {"status": "deleted"}
 
 class GroupMemberRequest(BaseModel):
@@ -409,12 +411,12 @@ class GroupMemberRequest(BaseModel):
 
 @app.post("/api/groups/{name}/members")
 async def add_member(name: str, data: GroupMemberRequest, user: dict = Depends(get_current_user)):
-    add_group_member(name, user["username"], data.username)
+    await adb.add_group_member(name, user["username"], data.username)
     return {"status": "added"}
 
 @app.delete("/api/groups/{name}/members/{member}")
 async def remove_member(name: str, member: str, user: dict = Depends(get_current_user)):
-    remove_group_member(name, user["username"], member)
+    await adb.remove_group_member(name, user["username"], member)
     return {"status": "removed"}
 
 
@@ -435,21 +437,21 @@ async def upload_file(
     contents = await file.read()
     await asyncio.to_thread(lambda: open(file_path, "wb").write(contents))
 
-    save_file_project(clean_name, project, username)
+    await adb.save_file_project(clean_name, project, username)
     job_id = str(uuid.uuid4())
-    enqueue_job(job_id, file_path, username, project)
+    await adb.enqueue_job(job_id, file_path, username, project)
 
     return {"status": "uploaded", "file": clean_name, "job_id": job_id}
 
 @app.delete("/api/files/{filename}")
 async def delete_file(filename: str, project: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
-    handle_delete_file(project, filename, user["username"])
+    await adb.handle_delete_file(project, filename, user["username"])
     background_tasks.add_task(remove_file_from_index, filename, user["username"], project)
     return {"status": "deleted"}
 
 @app.get("/api/files")
 async def list_files(project: str, user: dict = Depends(get_current_user)):
-    files = list_files_in_project(project, user["username"])
+    files = await adb.list_files_in_project(project, user["username"])
     return {"files": files}
 
 
@@ -457,26 +459,26 @@ async def list_files(project: str, user: dict = Depends(get_current_user)):
 
 @app.get("/api/jobs/{job_id}")
 async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
-    job = get_job(job_id)
+    job = await adb.get_job(job_id)
     if job is None or job["username"] != user["username"]:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 @app.get("/api/jobs")
 async def list_jobs(project: str, user: dict = Depends(get_current_user)):
-    return {"jobs": get_project_jobs(project, user["username"])}
+    return {"jobs": await adb.get_project_jobs(project, user["username"])}
 
 
 # ─── Threads ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/threads")
 async def get_threads(project: str, user: dict = Depends(get_current_user)):
-    owner = get_project_owner(project, user["username"])
+    owner = await adb.get_project_owner(project, user["username"])
     if owner != user["username"]:
-        perms = get_user_permissions(project, owner, user["username"])
+        perms = await adb.get_user_permissions(project, owner, user["username"])
         if "chats" not in perms:
             return {"threads": []}
-    threads = get_project_threads(project, owner)
+    threads = await adb.get_project_threads(project, owner)
     return {"threads": threads}
 
 class RenameThreadRequest(BaseModel):
@@ -486,12 +488,12 @@ class RenameThreadRequest(BaseModel):
 
 @app.put("/api/threads")
 async def rename_thread_endpoint(data: RenameThreadRequest, user: dict = Depends(get_current_user)):
-    rename_thread(data.project, user["username"], data.old_id, data.new_id)
+    await adb.rename_thread(data.project, user["username"], data.old_id, data.new_id)
     return {"status": "renamed"}
 
 @app.delete("/api/threads")
 async def delete_thread_endpoint(project: str, thread_id: str, user: dict = Depends(get_current_user)):
-    delete_thread(project, user["username"], thread_id)
+    await adb.delete_thread(project, user["username"], thread_id)
     return {"status": "deleted"}
 
 
@@ -517,12 +519,12 @@ async def get_query_log(user: dict = Depends(get_current_user)):
 
 @app.get("/api/history")
 async def get_history(project: str, username: str, thread_id: str = "General", user: dict = Depends(get_current_user)):
-    owner = get_project_owner(project, username)
+    owner = await adb.get_project_owner(project, username)
     if owner != username:
-        perms = get_user_permissions(project, owner, username)
+        perms = await adb.get_user_permissions(project, owner, username)
         if "chats" not in perms:
             return {"history": []}
-    history = get_chat_history(project, owner, thread_id)
+    history = await adb.get_chat_history(project, owner, thread_id)
     return {"history": history}
 
 
@@ -535,32 +537,32 @@ class CreateSnapshotRequest(BaseModel):
 
 @app.post("/api/snapshots")
 async def create_snapshot_endpoint(data: CreateSnapshotRequest, user: dict = Depends(get_current_user)):
-    owner = get_project_owner(data.project, user["username"])
-    perms = get_user_permissions(data.project, owner, user["username"])
+    owner = await adb.get_project_owner(data.project, user["username"])
+    perms = await adb.get_user_permissions(data.project, owner, user["username"])
     if owner != user["username"] and "chats" not in perms:
         raise HTTPException(status_code=403, detail="No access to this thread")
-    messages = get_chat_history(data.project, owner, data.thread_id)
-    files = list_files_in_project(data.project, owner)
+    messages = await adb.get_chat_history(data.project, owner, data.thread_id)
+    files = await adb.list_files_in_project(data.project, owner)
     snap_id = str(uuid.uuid4())
     title = data.title.strip() or data.thread_id
-    create_snapshot(snap_id, data.project, owner, data.thread_id, title, user["username"], messages, files)
+    await adb.create_snapshot(snap_id, data.project, owner, data.thread_id, title, user["username"], messages, files)
     return {"id": snap_id}
 
 @app.get("/api/snapshots")
 async def list_snapshots_endpoint(user: dict = Depends(get_current_user)):
-    snaps = list_user_snapshots(user["username"])
+    snaps = await adb.list_user_snapshots(user["username"])
     return {"snapshots": snaps}
 
 @app.get("/api/snapshots/{snap_id}")
 async def get_snapshot_endpoint(snap_id: str):
-    snap = get_snapshot(snap_id)
+    snap = await adb.get_snapshot(snap_id)
     if not snap:
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return snap
 
 @app.delete("/api/snapshots/{snap_id}")
 async def delete_snapshot_endpoint(snap_id: str, user: dict = Depends(get_current_user)):
-    delete_snapshot(snap_id, user["username"])
+    await adb.delete_snapshot(snap_id, user["username"])
     return {"status": "deleted"}
 
 
@@ -568,7 +570,7 @@ async def delete_snapshot_endpoint(snap_id: str, user: dict = Depends(get_curren
 
 @app.get("/api/admin/users")
 async def admin_get_users(admin: dict = Depends(require_admin)):
-    rows = get_all_users()
+    rows = await adb.get_all_users()
     return {"users": [{"id": r[0], "username": r[1], "role": r[2], "mfa_enabled": bool(r[3])} for r in rows]}
 
 class AddUserRequest(BaseModel):
@@ -578,28 +580,28 @@ class AddUserRequest(BaseModel):
 
 @app.post("/api/admin/users")
 async def admin_add_user(data: AddUserRequest, admin: dict = Depends(require_admin)):
-    ok = add_user(data.username, data.password, data.role)
+    ok = await adb.add_user(data.username, data.password, data.role)
     if not ok:
         raise HTTPException(status_code=400, detail="Username already exists")
     return {"status": "created"}
 
 @app.delete("/api/admin/users/{username}")
 async def admin_delete_user(username: str, admin: dict = Depends(require_admin)):
-    ok = delete_user(username)
+    ok = await adb.delete_user(username)
     if not ok:
         raise HTTPException(status_code=400, detail="Cannot delete last admin")
     return {"status": "deleted"}
 
 @app.get("/api/admin/audit")
 async def admin_audit(admin: dict = Depends(require_admin)):
-    df = get_audit_trail()
+    df = await run_in_threadpool(get_audit_trail)
     if df.empty:
         return {"entries": []}
     return {"entries": df.to_dict(orient="records")}
 
 @app.get("/api/admin/privacy")
 async def admin_privacy(admin: dict = Depends(require_admin)):
-    return get_redaction_stats()
+    return await adb.get_redaction_stats()
 
 
 # ─── Core RAG query ───────────────────────────────────────────────────────────
@@ -647,22 +649,22 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
     )
 
     # Resolve the actual owner so shared users query the owner's indexed data.
-    owner = get_project_owner(data.project, data.username)
+    owner = await adb.get_project_owner(data.project, data.username)
     if owner != data.username:
-        perms = get_user_permissions(data.project, owner, data.username)
+        perms = await adb.get_user_permissions(data.project, owner, data.username)
         if "documents" not in perms and "query" not in perms:
             raise HTTPException(status_code=403, detail="You don't have query permission on this workspace.")
 
     # NOTE: LlamaIndex calls asyncio.get_event_loop() internally — cannot run in to_thread.
     # get_query_components() returns (retriever, postprocessors, synthesizer) so we can
     # emit source citations before synthesis starts, building trust while text streams in.
-    retriever, postprocessors, synthesizer = get_query_components(
-        project_filter=data.project, username=owner
+    retriever, postprocessors, synthesizer = await run_in_threadpool(
+        get_query_components, project_filter=data.project, username=owner
     )
     if retriever is None:
         raise HTTPException(status_code=404, detail="Workspace index not found.")
 
-    save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
+    await adb.save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
 
     async def generate_tokens():
         from llama_index.core.schema import QueryBundle
@@ -710,7 +712,7 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
             if not static_text.strip():
                 static_text = "Error: The local LLM returned an empty response. Is Ollama running?"
             yield f"data: {json.dumps({'token': static_text})}\n\n"
-            save_chat_message(data.project, data.username, data.thread_id, "assistant", static_text)
+            await adb.save_chat_message(data.project, data.username, data.thread_id, "assistant", static_text)
             background_tasks.add_task(log_query, safe_prompt, static_text)
             yield "data: [DONE]\n\n"
             return
@@ -723,7 +725,7 @@ async def stream_query(data: QueryRequest, background_tasks: BackgroundTasks, us
         except Exception:
             yield f"data: {json.dumps({'token': ' [Error generating response]'})}\n\n"
 
-        save_chat_message(data.project, data.username, data.thread_id, "assistant", full_response)
+        await adb.save_chat_message(data.project, data.username, data.thread_id, "assistant", full_response)
         background_tasks.add_task(log_query, safe_prompt, full_response)
         yield "data: [DONE]\n\n"
 
@@ -806,7 +808,7 @@ async def vision_query(data: VisionRequest, user: dict = Depends(get_current_use
     safe_prompt = shield.redact_and_log(
         data.prompt, username=data.username, project=data.project, context="query"
     )
-    save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
+    await adb.save_chat_message(data.project, data.username, data.thread_id, "user", safe_prompt)
 
     ollama_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
@@ -843,7 +845,7 @@ async def vision_query(data: VisionRequest, user: dict = Depends(get_current_use
                     text = "The vision model returned an empty response."
         except Exception as e:
             text = f"Vision model error: {e}"
-        save_chat_message(data.project, data.username, data.thread_id, "assistant", text)
+        await adb.save_chat_message(data.project, data.username, data.thread_id, "assistant", text)
         yield f"data: {json.dumps({'token': text})}\n\n"
         yield "data: [DONE]\n\n"
 

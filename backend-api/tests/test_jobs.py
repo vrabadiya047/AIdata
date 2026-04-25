@@ -186,7 +186,7 @@ class TestUploadEnqueuesJob:
     def test_upload_returns_job_id(self, auth_client):
         import io
         auth_client.post("/api/projects", json={"name": "upload_job_proj"})
-        with patch("main.index_file"), patch("main.enqueue_job") as mock_enq:
+        with patch("main.index_file"), patch("src.database.enqueue_job") as mock_enq:
             captured_id = []
             def _fake_enqueue(jid, *args, **kwargs):
                 captured_id.append(jid)

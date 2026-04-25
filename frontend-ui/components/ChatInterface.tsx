@@ -147,7 +147,7 @@ function CitationChip({ source, index, open, onToggle }: {
   );
 }
 
-function SourcesRow({ sources }: { sources: Source[] }) {
+function SourcesRow({ sources, analyzing }: { sources: Source[]; analyzing?: boolean }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
   const toggle = (i: number) => setOpenIdx(prev => prev === i ? null : i);
   const active = openIdx !== null ? sources[openIdx] : null;
@@ -155,10 +155,22 @@ function SourcesRow({ sources }: { sources: Source[] }) {
     <div className="fade-up" style={{ marginBottom: "14px" }}>
       {/* Label row */}
       <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
-        <BookOpen size={10} style={{ color: "var(--t3)" }} />
-        <span className="font-mono" style={{ fontSize: "9px", letterSpacing: "0.14em", color: "var(--t3)", textTransform: "uppercase" }}>
-          {sources.length} {sources.length === 1 ? "Source" : "Sources"} — click to preview
+        <BookOpen size={10} style={{ color: analyzing ? "var(--amber)" : "var(--t3)", transition: "color 0.3s ease" }} />
+        <span className="font-mono" style={{
+          fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
+          color: analyzing ? "var(--amber)" : "var(--t3)", transition: "color 0.3s ease",
+        }}>
+          {analyzing
+            ? `Reading ${sources.length} ${sources.length === 1 ? "source" : "sources"}…`
+            : `${sources.length} ${sources.length === 1 ? "Source" : "Sources"} — click to preview`}
         </span>
+        {analyzing && (
+          <div style={{
+            width: "5px", height: "5px", borderRadius: "50%",
+            background: "var(--amber)", opacity: 0.8,
+            animation: "pulse 1s ease-in-out infinite",
+          }} />
+        )}
       </div>
       {/* Citation chips */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
@@ -209,8 +221,9 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
-function AIMessage({ content, thinking, streaming, sources }: {
+function AIMessage({ content, thinking, streaming, sources, indexingFile }: {
   content: string; thinking?: boolean; streaming?: boolean; sources?: Source[];
+  indexingFile?: string | null;
 }) {
   return (
     <div className="fade-up" style={{ display: "flex", gap: "14px", alignItems: "flex-start", paddingRight: "12%" }}>
@@ -226,10 +239,18 @@ function AIMessage({ content, thinking, streaming, sources }: {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Sources — shown as soon as they arrive, before text */}
-        {sources && sources.length > 0 && <SourcesRow sources={sources} />}
+        {sources && sources.length > 0 && <SourcesRow sources={sources} analyzing={thinking || streaming} />}
 
         {thinking && !content ? (
           <>
+            {indexingFile && (
+              <div className="font-mono" style={{
+                fontSize: "10px", color: "var(--amber)", opacity: 0.75,
+                marginBottom: "8px", letterSpacing: "0.06em",
+              }}>
+                Indexing {indexingFile}…
+              </div>
+            )}
             <ThinkingDots />
             <div style={{
               height: "2px", width: "52px", marginTop: "10px", borderRadius: "2px",
@@ -364,9 +385,24 @@ function AttachButton({ onClick, disabled }: { onClick: () => void; disabled: bo
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+async function waitForJob(jobId: string, signal: AbortSignal): Promise<void> {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline && !signal.aborted) {
+    await new Promise(r => setTimeout(r, 800));
+    if (signal.aborted) return;
+    try {
+      const r = await fetch(`/api/jobs/${jobId}`, { signal });
+      if (!r.ok) break;
+      const { status } = await r.json();
+      if (status === 'done' || status === 'failed') return;
+    } catch { break; }
+  }
+}
+
 export default function ChatInterface({ activeProject, activeThread, username, onNewThread }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const [indexingFile, setIndexingFile] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [currentThread, setCurrentThread] = useState(activeThread);
@@ -487,12 +523,21 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       const imageFiles = filesToUpload.filter(f => f.isImage);
       const docFiles   = filesToUpload.filter(f => !f.isImage);
 
-      // Upload non-image files to the workspace index as usual
+      // Upload non-image files and wait for each to finish indexing before querying.
+      // The backend enqueues an async job — querying before it's done returns stale results.
       for (const af of docFiles) {
         const fd = new FormData();
         fd.append("file", af.file);
         fd.append("project", activeProject);
-        await fetch("/api/upload", { method: "POST", body: fd });
+        const uploadRes = await fetch("/api/upload", { method: "POST", body: fd });
+        if (uploadRes.ok) {
+          const { job_id } = await uploadRes.json();
+          if (job_id) {
+            setIndexingFile(af.name);
+            await waitForJob(job_id, abortRef.current!.signal);
+            setIndexingFile(null);
+          }
+        }
       }
 
       let response: Response;
@@ -607,6 +652,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       clearTimeout(timeoutId);
       streamingRef.current = false;
       userStoppedRef.current = false;
+      setIndexingFile(null);
       setIsLoading(false);
     }
   };
@@ -672,6 +718,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                   thinking={isLoading && i === messages.length - 1 && !msg.content}
                   streaming={isLoading && i === messages.length - 1 && !!msg.content}
                   sources={msg.sources}
+                  indexingFile={isLoading && i === messages.length - 1 ? indexingFile : null}
                 />
               )
             )}

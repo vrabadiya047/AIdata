@@ -51,14 +51,21 @@ DATABASE_URL   = os.environ.get("DATABASE_URL",   "postgresql://sovereign:sovere
 QDRANT_URL     = os.environ.get("QDRANT_URL",     "http://localhost:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 
-CHUNK_SIZE    = 512
+CHUNK_SIZE    = 512   # fallback when semantic chunking is unavailable
 CHUNK_OVERLAP = 50
+
+# Semantic chunking: percentile of cosine-similarity drops that trigger a split.
+# 95 → only the sharpest 5% of topic shifts cause a boundary (large, coherent chunks).
+# Lower values produce more, smaller chunks.
+SEMANTIC_CHUNK_THRESHOLD = int(os.environ.get("SOVEREIGN_SEMANTIC_THRESHOLD", "95"))
 
 PROJECT_CATEGORIES = ["General Specs", "Main Roads WA", "Metronet", "Private Development"]
 
+LLM_MODEL = os.environ.get("SOVEREIGN_LLM_MODEL", "llama3.2:3b")
+
 def setup_ai_settings():
     embed_path = _local_model_path(EMBED_MODEL)
-    Settings.llm = Ollama(model="llama3.2:1b", request_timeout=600.0)
+    Settings.llm = Ollama(model=LLM_MODEL, request_timeout=600.0, context_window=4096)
     Settings.embed_model = HuggingFaceEmbedding(model_name=embed_path)
     Settings.chunk_size    = CHUNK_SIZE
     Settings.chunk_overlap = CHUNK_OVERLAP

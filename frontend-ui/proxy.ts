@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
 
 const SECRET = new TextEncoder().encode(
-  process.env.SOVEREIGN_JWT_SECRET ?? 'sovereign-dev-secret-2026-change-in-prod'
+  process.env.SOVEREIGN_JWT_SECRET ?? 'sovereign-test-secret-not-for-production'
 );
 
 export async function proxy(req: NextRequest) {

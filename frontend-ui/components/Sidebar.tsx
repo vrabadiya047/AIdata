@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight,
   Terminal, Archive, Zap, LogOut, Trash2,
-  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera,
+  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera, KeyRound,
 } from "lucide-react";
 import { useSession } from "@/contexts/SessionContext";
 import { getWorkspaces, getProjectThreads } from "@/app/actions";
@@ -14,6 +14,7 @@ import ShareModal from "@/components/ShareModal";
 import SnapshotModal from "@/components/SnapshotModal";
 import ThemeToggle from "@/components/ThemeToggle";
 import QueryLogPanel from "@/components/QueryLogPanel";
+import SecurityPanel from "@/components/SecurityPanel";
 
 interface SidebarProps {
   activeProject: string;
@@ -188,6 +189,7 @@ export default function Sidebar({
 
   const [shareTarget, setShareTarget] = useState<Workspace | null>(null);
   const [showQueryLog, setShowQueryLog] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
   const [snapshotThread, setSnapshotThread] = useState<string | null>(null);
 
   const username = session?.username ?? "";
@@ -604,6 +606,16 @@ export default function Sidebar({
             </div>
             <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Query Log</span>
           </NavItem>
+          <NavItem onClick={() => setShowSecurity(true)}>
+            <div style={{
+              width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
+              background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.2)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <KeyRound size={12} style={{ color: "#818cf8" }} />
+            </div>
+            <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Security</span>
+          </NavItem>
           {session?.role === "Admin" && (
             <NavItem onClick={() => router.push("/admin")}>
               <div style={{
@@ -754,6 +766,7 @@ export default function Sidebar({
       )}
 
       {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
+      {showSecurity && <SecurityPanel onClose={() => setShowSecurity(false)} />}
 
       {snapshotThread && (
         <SnapshotModal

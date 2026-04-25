@@ -54,10 +54,13 @@ class TestSourceExtractionViaEndpoint:
     """Drive /api/query with a mocked engine and inspect SSE output."""
 
     def _post(self, auth_client, engine_response):
-        with patch("main.get_query_engine", return_value=MagicMock()) as mock_get_engine:
-            mock_engine = MagicMock()
-            mock_engine.query.return_value = engine_response
-            mock_get_engine.return_value = mock_engine
+        mock_retriever = MagicMock()
+        mock_retriever.retrieve.return_value = engine_response.source_nodes
+
+        mock_synthesizer = MagicMock()
+        mock_synthesizer.synthesize.return_value = engine_response
+
+        with patch("main.get_query_components", return_value=(mock_retriever, [], mock_synthesizer)):
             with patch("main.save_chat_message"), patch("main.log_query"):
                 auth_client.post("/api/projects", json={"name": "cite_proj"})
                 r = auth_client.post("/api/query", json={

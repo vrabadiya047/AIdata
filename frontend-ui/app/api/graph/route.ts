@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   const project = req.nextUrl.searchParams.get("project") ?? "";
   const cookie  = req.cookies.get("sovereign_session")?.value ?? "";

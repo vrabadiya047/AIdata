@@ -217,6 +217,11 @@ body {
   50%       { opacity: 0; }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 /* ─── Utility classes ───────────────────────────── */
 .font-mono    { font-family: 'JetBrains Mono', 'Courier New', monospace; }
 .font-display { font-family: 'Syne', sans-serif; }

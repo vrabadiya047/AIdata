@@ -9,6 +9,9 @@ import KnowledgeGraph from '@/components/KnowledgeGraph';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import TopBar from '@/components/TopBar';
 import ShortcutsOverlay from '@/components/ShortcutsOverlay';
+import ReindexModal from '@/components/ReindexModal';
+import QueryLogPanel from '@/components/QueryLogPanel';
+import SecurityPanel from '@/components/SecurityPanel';
 import { useSession } from '@/contexts/SessionContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -16,7 +19,7 @@ import { useRegisterCommands, CommandItem } from '@/contexts/CommandContext';
 import { getWorkspaces, getProjectThreads } from '@/app/actions';
 import {
   MessageSquare, Network, FileText, Plus, Sun, Moon, LogOut, Keyboard,
-  Folder, Hash, Settings,
+  Folder, Hash, Settings, ChevronRight,
 } from 'lucide-react';
 
 export default function Home() {
@@ -29,6 +32,9 @@ export default function Home() {
   const [activeThread, setActiveThread] = useState('General');
   const [showDocs, setShowDocs] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showReindex, setShowReindex] = useState(false);
+  const [showQueryLog, setShowQueryLog] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wsRefreshKey, setWsRefreshKey] = useState(0);
   const [viewMode, setViewMode] = useState<'chat' | 'graph'>('chat');
@@ -212,17 +218,43 @@ export default function Home() {
         width: '100%',
         background: 'var(--void)',
         overflow: 'hidden',
+        position: 'relative',
       }}
     >
-      {!sidebarCollapsed && (
+      {sidebarCollapsed ? (
+        <button
+          onClick={() => setSidebarCollapsed(false)}
+          title="Expand sidebar"
+          style={{
+            position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)',
+            zIndex: 40, width: '18px', height: '48px',
+            borderRadius: '0 8px 8px 0',
+            background: 'var(--surface)', border: '1px solid var(--b1)', borderLeft: 'none',
+            cursor: 'pointer', color: 'var(--t3)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.15s ease',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.color = 'var(--amber)';
+            e.currentTarget.style.borderColor = 'rgba(245,158,11,0.4)';
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.color = 'var(--t3)';
+            e.currentTarget.style.borderColor = 'var(--b1)';
+          }}
+        >
+          <ChevronRight size={11} />
+        </button>
+      ) : (
         <ErrorBoundary name="Sidebar">
           <Sidebar
             activeProject={activeProject}
             activeThread={activeThread}
             wsRefreshKey={wsRefreshKey}
-            onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); }}
-            onSelectThread={setActiveThread}
+            onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); setViewMode('chat'); }}
+            onSelectThread={(t) => { setActiveThread(t); setViewMode('chat'); }}
             onOpenDocs={() => setShowDocs(true)}
+            onCollapse={() => setSidebarCollapsed(true)}
           />
         </ErrorBoundary>
       )}
@@ -244,6 +276,7 @@ export default function Home() {
           onViewModeChange={setViewMode}
           onOpenDocs={() => setShowDocs(true)}
           onOpenShortcuts={() => setShowShortcuts(true)}
+          onReindex={() => setShowReindex(true)}
         />
 
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -261,6 +294,9 @@ export default function Home() {
                 onRenameThread={(_oldId, newId) => {
                   setActiveThread(newId);
                 }}
+                onOpenDocs={() => setShowDocs(true)}
+                onOpenQueryLog={() => setShowQueryLog(true)}
+                onOpenSecurity={() => setShowSecurity(true)}
               />
             </ErrorBoundary>
           ) : (
@@ -285,6 +321,10 @@ export default function Home() {
         onClose={() => setShowShortcuts(false)}
         isMac={isMac}
       />
+
+      {showReindex && <ReindexModal onClose={() => setShowReindex(false)} isAdmin={session?.role === 'Admin'} />}
+      {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
+      {showSecurity && <SecurityPanel onClose={() => setShowSecurity(false)} />}
     </div>
   );
 }

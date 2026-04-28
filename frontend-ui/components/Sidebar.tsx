@@ -3,9 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight,
-  Terminal, Archive, Zap, LogOut, Trash2,
-  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera, KeyRound,
+  Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight, ChevronLeft,
+  LogOut, Trash2,
+  Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera,
 } from "lucide-react";
 import { useSession } from "@/contexts/SessionContext";
 import { getWorkspaces, getProjectThreads } from "@/app/actions";
@@ -13,8 +13,6 @@ import { Workspace } from "@/types/sovereign";
 import ShareModal from "@/components/ShareModal";
 import SnapshotModal from "@/components/SnapshotModal";
 import ThemeToggle from "@/components/ThemeToggle";
-import QueryLogPanel from "@/components/QueryLogPanel";
-import SecurityPanel from "@/components/SecurityPanel";
 
 interface SidebarProps {
   activeProject: string;
@@ -22,6 +20,7 @@ interface SidebarProps {
   onSelectProject: (project: string) => void;
   onSelectThread: (thread: string) => void;
   onOpenDocs: () => void;
+  onCollapse: () => void;
   wsRefreshKey?: number;
 }
 
@@ -163,10 +162,35 @@ function ActionButtons({
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 export default function Sidebar({
-  activeProject, activeThread, onSelectProject, onSelectThread, onOpenDocs, wsRefreshKey,
+  activeProject, activeThread, onSelectProject, onSelectThread, onOpenDocs, onCollapse, wsRefreshKey,
 }: SidebarProps) {
   const { session } = useSession();
   const router = useRouter();
+
+  // ── Resize ──────────────────────────────────────────────────────────────────
+  const [sidebarWidth, setSidebarWidth] = useState(268);
+  const isResizing = useRef(false);
+
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    isResizing.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onMouseMove(ev: MouseEvent) {
+      if (!isResizing.current) return;
+      setSidebarWidth(Math.min(480, Math.max(180, ev.clientX)));
+    }
+    function onMouseUp() {
+      isResizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    }
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [threads, setThreads] = useState<string[]>([]);
@@ -189,8 +213,6 @@ export default function Sidebar({
   const [creating, setCreating] = useState(false);
 
   const [shareTarget, setShareTarget] = useState<Workspace | null>(null);
-  const [showQueryLog, setShowQueryLog] = useState(false);
-  const [showSecurity, setShowSecurity] = useState(false);
   const [snapshotThread, setSnapshotThread] = useState<string | null>(null);
 
   const username = session?.username ?? "";
@@ -307,11 +329,51 @@ export default function Sidebar({
   return (
     <>
       <aside style={{
-        width: "268px", minWidth: "268px",
+        width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px`,
         background: "var(--surface)", borderRight: "1px solid var(--b1)",
         display: "flex", flexDirection: "column", height: "100%",
         position: "relative", overflow: "hidden",
+        transition: isResizing.current ? "none" : undefined,
       }}>
+
+        {/* ── Resize handle ──────────────────────────────────────────────── */}
+        <div
+          onMouseDown={startResize}
+          style={{
+            position: "absolute", right: 0, top: 0, bottom: 0,
+            width: "5px", cursor: "col-resize", zIndex: 20,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = "rgba(245,158,11,0.18)")}
+          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+        >
+          {/* Collapse button — sits on the handle, centred vertically */}
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onClick={onCollapse}
+            title="Collapse sidebar"
+            style={{
+              position: "absolute",
+              width: "18px", height: "36px", borderRadius: "0 6px 6px 0",
+              background: "var(--raised)", border: "1px solid var(--b2)",
+              borderLeft: "none",
+              cursor: "pointer", color: "var(--t3)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              right: 0,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.color = "var(--amber)";
+              e.currentTarget.style.borderColor = "rgba(245,158,11,0.4)";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = "var(--t3)";
+              e.currentTarget.style.borderColor = "var(--b2)";
+            }}
+          >
+            <ChevronLeft size={11} />
+          </button>
+        </div>
         {/* Background glow */}
         <div style={{
           position: "absolute", top: "-80px", left: "-80px",
@@ -585,51 +647,6 @@ export default function Sidebar({
             />
           </div>
 
-          {/* ── Tools — always visible ────────────────────────────────────── */}
-          <SectionLabel>Tools</SectionLabel>
-          <NavItem onClick={onOpenDocs}>
-            <div style={{
-              width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
-              background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.2)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <Archive size={12} style={{ color: "var(--cyan)" }} />
-            </div>
-            <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Documents</span>
-          </NavItem>
-          <NavItem onClick={() => setShowQueryLog(true)}>
-            <div style={{
-              width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
-              background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.2)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <Terminal size={12} style={{ color: "var(--green)" }} />
-            </div>
-            <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Query Log</span>
-          </NavItem>
-          <NavItem onClick={() => setShowSecurity(true)}>
-            <div style={{
-              width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
-              background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.2)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <KeyRound size={12} style={{ color: "#818cf8" }} />
-            </div>
-            <span style={{ fontSize: "13px", color: "var(--t1)", fontWeight: 500 }}>Security</span>
-          </NavItem>
-          {session?.role === "Admin" && (
-            <NavItem onClick={() => router.push("/admin")}>
-              <div style={{
-                width: "26px", height: "26px", borderRadius: "7px", flexShrink: 0,
-                background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.2)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                <Zap size={12} style={{ color: "var(--amber)" }} />
-              </div>
-              <span style={{ fontSize: "13px", color: "var(--amber)", fontWeight: 500 }}>Admin</span>
-            </NavItem>
-          )}
-
           {/* ── History ──────────────────────────────────────────────────── */}
           {activeProject && threads.length > 0 && (
             <>
@@ -728,11 +745,23 @@ export default function Sidebar({
             <span style={{ fontSize: "13px", color: "var(--t2)", fontWeight: 500 }}>Sign out</span>
           </NavItem>
 
-          <div style={{
-            display: "flex", alignItems: "center", gap: "10px",
-            padding: "10px 10px", borderRadius: "10px",
-            background: "var(--raised)", border: "1px solid var(--b2)", marginTop: "6px",
-          }}>
+          <button
+            onClick={() => router.push("/admin")}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", gap: "10px",
+              padding: "10px 10px", borderRadius: "10px",
+              background: "var(--raised)", border: "1px solid var(--b2)", marginTop: "6px",
+              cursor: "pointer", transition: "all 0.15s ease", textAlign: "left",
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = "var(--hover-bg)";
+              e.currentTarget.style.borderColor = "var(--b1)";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = "var(--raised)";
+              e.currentTarget.style.borderColor = "var(--b2)";
+            }}
+          >
             <div style={{
               width: "32px", height: "32px", borderRadius: "8px", flexShrink: 0,
               background: "linear-gradient(135deg, var(--cyan-10) 0%, rgba(6,182,212,0.08) 100%)",
@@ -752,7 +781,7 @@ export default function Sidebar({
               </div>
             </div>
             <ChevronRight size={13} style={{ color: "var(--t3)", flexShrink: 0 }} />
-          </div>
+          </button>
         </div>
       </aside>
 
@@ -765,9 +794,6 @@ export default function Sidebar({
           onUpdated={() => { setShareTarget(null); loadWorkspaces(); }}
         />
       )}
-
-      {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
-      {showSecurity && <SecurityPanel onClose={() => setShowSecurity(false)} />}
 
       {snapshotThread && (
         <SnapshotModal

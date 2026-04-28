@@ -6,8 +6,9 @@ import { useSession } from '@/contexts/SessionContext';
 import {
   Shield, Plus, Trash2, RefreshCw, ArrowLeft,
   Users, Activity, Eye, FileText, Search, Hash, Smartphone,
-  Copy, Check, RotateCw, KeyRound, X as XIcon,
+  Copy, Check, RotateCw, KeyRound, X as XIcon, DatabaseZap,
 } from 'lucide-react';
+import ReindexModal from '@/components/ReindexModal';
 
 interface User { id: number; username: string; role: string; mfa_enabled: boolean; }
 interface AuditEntry { [key: string]: string | number; }
@@ -238,6 +239,7 @@ export default function AdminPage() {
   const [privacyLoading, setPrivacyLoading] = useState(false);
 
   const [tab, setTab] = useState<'users' | 'audit' | 'privacy'>('users');
+  const [showReindex, setShowReindex] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [generatedPassword, setGeneratedPassword] = useState(() => generateTempPassword());
   const [newRole, setNewRole] = useState('User');
@@ -354,6 +356,19 @@ export default function AdminPage() {
           <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--amber)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
             Admin Console
           </div>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => setShowReindex(true)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '8px 14px', borderRadius: '8px', cursor: 'pointer',
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+              color: 'var(--amber)', fontSize: '12px', fontWeight: 600,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <DatabaseZap size={13} /> Reindex Documents
+          </button>
         </div>
 
         {/* Tabs */}
@@ -785,6 +800,8 @@ export default function AdminPage() {
           </>
         )}
       </div>
+
+      {showReindex && <ReindexModal onClose={() => setShowReindex(false)} isAdmin={true} />}
     </div>
   );
 }

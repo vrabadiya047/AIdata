@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { X, Upload, FileText, Image, Trash2, RefreshCw, AlertCircle } from "lucide-react";
+import { X, Upload, FileText, Image, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
+import { useToast } from "@/contexts/ToastContext";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".gif", ".webp"]);
 
@@ -15,15 +16,65 @@ interface DocumentPanelProps {
   onClose: () => void;
 }
 
+interface UploadState {
+  phase: "uploading" | "indexing" | "done" | null;
+  // uploading phase
+  filesDone: number;
+  filesTotal: number;
+  filePct: number;       // 0-100 within current file (XHR upload bytes)
+  // indexing phase
+  jobsDone: number;
+  jobsTotal: number;
+}
+
+function ProgressBar({ pct, color = "var(--amber)" }: { pct: number; color?: string }) {
+  return (
+    <div style={{
+      height: "4px", borderRadius: "2px",
+      background: "var(--raised)", overflow: "hidden",
+    }}>
+      <div style={{
+        height: "100%", width: `${Math.min(100, Math.max(0, pct))}%`,
+        background: color, borderRadius: "2px",
+        transition: "width 0.3s ease",
+      }} />
+    </div>
+  );
+}
+
+function uploadXHR(
+  url: string,
+  formData: FormData,
+  onProgress: (pct: number) => void,
+  xhrRef?: React.MutableRefObject<XMLHttpRequest | null>,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    if (xhrRef) xhrRef.current = xhr;
+    xhr.open("POST", url);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload  = () => resolve(new Response(xhr.responseText, { status: xhr.status }));
+    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.onabort = () => reject(new Error("Cancelled"));
+    xhr.send(formData);
+  });
+}
+
 export default function DocumentPanel({ activeProject, onClose }: DocumentPanelProps) {
+  const toast = useToast();
   const [files, setFiles] = useState<string[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
-  const [indexing, setIndexing] = useState(false);
-  const [pendingJobs, setPendingJobs] = useState<string[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [upload, setUpload] = useState<UploadState>({
+    phase: null, filesDone: 0, filesTotal: 0, filePct: 0, jobsDone: 0, jobsTotal: 0,
+  });
+  const inputRef  = useRef<HTMLInputElement>(null);
+  const pollRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const jobIdsRef = useRef<string[]>([]);
+  const xhrRef    = useRef<XMLHttpRequest | null>(null);
+  const cancelRef = useRef(false);
 
   async function loadFiles() {
     if (!activeProject) return;
@@ -35,73 +86,109 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
           typeof f === "string" ? f : f.name
         )
       );
-    } catch {
-      setFiles([]);
-    }
+    } catch { setFiles([]); }
   }
 
   useEffect(() => { loadFiles(); }, [activeProject]);
 
-  const pollJobs = useCallback(async (jobIds: string[]) => {
-    if (jobIds.length === 0) return;
+  const pollJobs = useCallback(async () => {
+    const ids = jobIdsRef.current;
+    if (!ids.length) return;
     try {
       const statuses = await Promise.all(
-        jobIds.map(id => fetch(`/api/jobs/${id}`).then(r => r.ok ? r.json() : null))
+        ids.map(id => fetch(`/api/jobs/${id}`).then(r => r.ok ? r.json() : null))
       );
-      const still = statuses
-        .filter(j => j && (j.status === "pending" || j.status === "running"))
-        .map(j => j!.id);
-      setPendingJobs(still);
-      if (still.length === 0) {
-        setIndexing(false);
+      const done = statuses.filter(j => j && (j.status === "done" || j.status === "failed")).length;
+      setUpload(prev => ({ ...prev, jobsDone: done }));
+
+      if (done === ids.length) {
+        clearInterval(pollRef.current!);
+        pollRef.current = null;
+        setUpload(prev => ({ ...prev, phase: "done" }));
         await loadFiles();
-        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+        setTimeout(() => setUpload(p => ({ ...p, phase: null })), 2000);
       }
-    } catch {
-      /* ignore transient errors */
-    }
+    } catch { /* ignore transient */ }
   }, []);
 
   useEffect(() => {
-    if (pendingJobs.length > 0 && !pollRef.current) {
-      pollRef.current = setInterval(() => pollJobs(pendingJobs), 2000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  function runInBackground() {
+    if (jobIdsRef.current.length > 0) {
+      const count = jobIdsRef.current.length;
+      toast.trackInBackground(
+        jobIdsRef.current,
+        'Indexing complete',
+        `${count} file${count !== 1 ? 's' : ''} indexed successfully.`,
+      );
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
-    return () => {
-      if (pollRef.current && pendingJobs.length === 0) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [pendingJobs, pollJobs]);
+    onClose();
+  }
+
+  function cancelOperation() {
+    cancelRef.current = true;
+    if (xhrRef.current) { xhrRef.current.abort(); xhrRef.current = null; }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    jobIdsRef.current = [];
+    setUpload({ phase: null, filesDone: 0, filesTotal: 0, filePct: 0, jobsDone: 0, jobsTotal: 0 });
+  }
 
   async function uploadFiles(fileList: FileList) {
     if (!fileList.length) return;
     if (!activeProject) { setError("Please select a workspace first."); return; }
-    setUploading(true);
     setError("");
-    setIndexing(false);
+    cancelRef.current = false;
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
 
+    const allFiles = Array.from(fileList);
+    setUpload({ phase: "uploading", filesDone: 0, filesTotal: allFiles.length, filePct: 0, jobsDone: 0, jobsTotal: 0 });
+
     const jobIds: string[] = [];
-    for (const file of Array.from(fileList)) {
+    for (let i = 0; i < allFiles.length; i++) {
+      if (cancelRef.current) break;
+      const file = allFiles[i];
       const fd = new FormData();
       fd.append("file", file);
       fd.append("project", activeProject);
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
-      if (!res.ok) {
-        const d = await res.json();
-        setError(d.error ?? "Upload failed");
-      } else {
-        const d = await res.json();
-        if (d.job_id) jobIds.push(d.job_id);
+
+      setUpload(prev => ({ ...prev, filesDone: i, filePct: 0 }));
+
+      try {
+        const res = await uploadXHR("/api/upload", fd, (pct) => {
+          setUpload(prev => ({ ...prev, filePct: pct }));
+        }, xhrRef);
+        if (cancelRef.current) break;
+        if (!res.ok) {
+          const d = JSON.parse(await res.text());
+          setError(d.error ?? "Upload failed");
+        } else {
+          const d = JSON.parse(await res.text());
+          if (d.job_id) jobIds.push(d.job_id);
+        }
+      } catch (e) {
+        if (cancelRef.current) break;
+        setError(e instanceof Error ? e.message : "Upload failed");
       }
     }
-    setUploading(false);
+
+    if (cancelRef.current) return;
+
     if (jobIds.length > 0) {
-      setIndexing(true);
-      setPendingJobs(jobIds);
+      jobIdsRef.current = jobIds;
+      setUpload(prev => ({
+        ...prev, phase: "indexing",
+        filesDone: allFiles.length, filePct: 100,
+        jobsDone: 0, jobsTotal: jobIds.length,
+      }));
+      pollRef.current = setInterval(pollJobs, 2000);
+    } else {
+      setUpload(prev => ({ ...prev, phase: "done" }));
+      await loadFiles();
+      setTimeout(() => setUpload(p => ({ ...p, phase: null })), 2000);
     }
-    await loadFiles();
   }
 
   async function deleteFile(filename: string) {
@@ -117,6 +204,35 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
     e.preventDefault();
     setDragging(false);
     if (e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+  }
+
+  // ── Derived display values ──────────────────────────────────────────────
+  const { phase, filesDone, filesTotal, filePct, jobsDone, jobsTotal } = upload;
+  const isActive = phase === "uploading" || phase === "indexing";
+
+  let statusLabel = "";
+  let statusPct = 0;
+  let statusColor = "var(--amber)";
+
+  if (phase === "uploading") {
+    // Overall upload progress: files done so far + current file fraction
+    const overallPct = filesTotal > 0
+      ? Math.round(((filesDone + filePct / 100) / filesTotal) * 100)
+      : 0;
+    statusPct = overallPct;
+    statusLabel = filesTotal > 1
+      ? `Uploading file ${filesDone + 1} of ${filesTotal} — ${overallPct}%`
+      : `Uploading — ${filePct}%`;
+    statusColor = "var(--amber)";
+  } else if (phase === "indexing") {
+    const pct = jobsTotal > 0 ? Math.round((jobsDone / jobsTotal) * 100) : 0;
+    statusPct = pct;
+    statusLabel = `Indexing — ${jobsDone} / ${jobsTotal} file${jobsTotal !== 1 ? "s" : ""} (${pct}%)`;
+    statusColor = "var(--cyan)";
+  } else if (phase === "done") {
+    statusPct = 100;
+    statusLabel = "Complete";
+    statusColor = "var(--green)";
   }
 
   return (
@@ -148,25 +264,29 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+
           {/* Drop zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => !isActive && inputRef.current?.click()}
             style={{
-              border: `2px dashed ${dragging ? "var(--amber)" : "var(--b2)"}`,
+              border: `2px dashed ${dragging ? "var(--amber)" : isActive ? "var(--b2)" : "var(--b2)"}`,
               borderRadius: "12px",
-              padding: "32px 20px",
+              padding: "28px 20px",
               textAlign: "center",
-              cursor: "pointer",
+              cursor: isActive ? "default" : "pointer",
               background: dragging ? "rgba(245,158,11,0.05)" : "var(--raised)",
               transition: "all 0.2s ease",
             }}
           >
-            <Upload size={24} style={{ color: dragging ? "var(--amber)" : "var(--t2)", margin: "0 auto 12px", display: "block" }} />
-            <div style={{ fontSize: "14px", color: "var(--t1)", marginBottom: "4px" }}>
-              {uploading ? "Uploading..." : "Drop files here or click to browse"}
+            <Upload size={22} style={{
+              color: isActive ? "var(--t3)" : dragging ? "var(--amber)" : "var(--t2)",
+              margin: "0 auto 10px", display: "block",
+            }} />
+            <div style={{ fontSize: "13px", color: isActive ? "var(--t3)" : "var(--t1)", marginBottom: "4px" }}>
+              {isActive ? "Processing…" : "Drop files here or click to browse"}
             </div>
             <div className="font-mono" style={{ fontSize: "10px", color: "var(--t2)", letterSpacing: "0.06em" }}>
               PDF · TXT · CSV · DOCX · PNG · JPG · TIFF
@@ -181,16 +301,53 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
             />
           </div>
 
-          {/* Index status */}
-          {indexing && (
+          {/* Progress card */}
+          {phase && (
             <div style={{
-              display: "flex", alignItems: "center", gap: "8px",
-              padding: "10px 14px", borderRadius: "8px",
-              background: "rgba(34,211,238,0.06)", border: "1px solid rgba(34,211,238,0.15)",
-              fontSize: "12px", color: "var(--cyan)",
+              padding: "14px 16px", borderRadius: "10px",
+              background: phase === "done"
+                ? "rgba(16,185,129,0.06)"
+                : phase === "indexing"
+                ? "rgba(34,211,238,0.06)"
+                : "rgba(245,158,11,0.06)",
+              border: `1px solid ${phase === "done"
+                ? "rgba(16,185,129,0.20)"
+                : phase === "indexing"
+                ? "rgba(34,211,238,0.18)"
+                : "rgba(245,158,11,0.20)"}`,
+              display: "flex", flexDirection: "column", gap: "10px",
             }}>
-              <RefreshCw size={13} style={{ animation: "spin 1s linear infinite" }} />
-              Rebuilding index…
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: "12px", fontWeight: 500, color: statusColor }}>
+                  {statusLabel}
+                </span>
+                {phase === "done" && <CheckCircle2 size={14} style={{ color: "var(--green)" }} />}
+              </div>
+              <ProgressBar pct={statusPct} color={statusColor} />
+              {isActive && (
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={runInBackground}
+                    style={{
+                      flex: 1, padding: "5px 0", borderRadius: "6px",
+                      background: "rgba(255,255,255,0.05)", border: "1px solid var(--b2)",
+                      color: "var(--t2)", fontSize: "11px", fontWeight: 500, cursor: "pointer",
+                    }}
+                  >
+                    Run in background
+                  </button>
+                  <button
+                    onClick={cancelOperation}
+                    style={{
+                      flex: 1, padding: "5px 0", borderRadius: "6px",
+                      background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.25)",
+                      color: "#f87171", fontSize: "11px", fontWeight: 500, cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -238,7 +395,7 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
             </div>
           )}
 
-          {files.length === 0 && !uploading && (
+          {files.length === 0 && !isActive && (
             <div style={{ textAlign: "center", padding: "24px 0" }}>
               <div style={{ fontSize: "13px", color: "var(--t2)" }}>No documents indexed yet.</div>
             </div>

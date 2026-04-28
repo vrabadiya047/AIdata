@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight,
+  Shield, Plus, Hash, ChevronDown, ChevronUp, ChevronRight, ChevronLeft,
   LogOut, Trash2,
   Globe, Lock, Users, Share2, MoreHorizontal, Pencil, Check, X, Camera,
 } from "lucide-react";
@@ -20,6 +20,7 @@ interface SidebarProps {
   onSelectProject: (project: string) => void;
   onSelectThread: (thread: string) => void;
   onOpenDocs: () => void;
+  onCollapse: () => void;
   wsRefreshKey?: number;
 }
 
@@ -161,10 +162,35 @@ function ActionButtons({
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 export default function Sidebar({
-  activeProject, activeThread, onSelectProject, onSelectThread, onOpenDocs, wsRefreshKey,
+  activeProject, activeThread, onSelectProject, onSelectThread, onOpenDocs, onCollapse, wsRefreshKey,
 }: SidebarProps) {
   const { session } = useSession();
   const router = useRouter();
+
+  // ── Resize ──────────────────────────────────────────────────────────────────
+  const [sidebarWidth, setSidebarWidth] = useState(268);
+  const isResizing = useRef(false);
+
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    isResizing.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function onMouseMove(ev: MouseEvent) {
+      if (!isResizing.current) return;
+      setSidebarWidth(Math.min(480, Math.max(180, ev.clientX)));
+    }
+    function onMouseUp() {
+      isResizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    }
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [threads, setThreads] = useState<string[]>([]);
@@ -303,11 +329,51 @@ export default function Sidebar({
   return (
     <>
       <aside style={{
-        width: "268px", minWidth: "268px",
+        width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px`,
         background: "var(--surface)", borderRight: "1px solid var(--b1)",
         display: "flex", flexDirection: "column", height: "100%",
         position: "relative", overflow: "hidden",
+        transition: isResizing.current ? "none" : undefined,
       }}>
+
+        {/* ── Resize handle ──────────────────────────────────────────────── */}
+        <div
+          onMouseDown={startResize}
+          style={{
+            position: "absolute", right: 0, top: 0, bottom: 0,
+            width: "5px", cursor: "col-resize", zIndex: 20,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = "rgba(245,158,11,0.18)")}
+          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+        >
+          {/* Collapse button — sits on the handle, centred vertically */}
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onClick={onCollapse}
+            title="Collapse sidebar"
+            style={{
+              position: "absolute",
+              width: "18px", height: "36px", borderRadius: "0 6px 6px 0",
+              background: "var(--raised)", border: "1px solid var(--b2)",
+              borderLeft: "none",
+              cursor: "pointer", color: "var(--t3)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              right: 0,
+              transition: "all 0.15s ease",
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.color = "var(--amber)";
+              e.currentTarget.style.borderColor = "rgba(245,158,11,0.4)";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = "var(--t3)";
+              e.currentTarget.style.borderColor = "var(--b2)";
+            }}
+          >
+            <ChevronLeft size={11} />
+          </button>
+        </div>
         {/* Background glow */}
         <div style={{
           position: "absolute", top: "-80px", left: "-80px",
@@ -679,11 +745,23 @@ export default function Sidebar({
             <span style={{ fontSize: "13px", color: "var(--t2)", fontWeight: 500 }}>Sign out</span>
           </NavItem>
 
-          <div style={{
-            display: "flex", alignItems: "center", gap: "10px",
-            padding: "10px 10px", borderRadius: "10px",
-            background: "var(--raised)", border: "1px solid var(--b2)", marginTop: "6px",
-          }}>
+          <button
+            onClick={() => router.push("/admin")}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", gap: "10px",
+              padding: "10px 10px", borderRadius: "10px",
+              background: "var(--raised)", border: "1px solid var(--b2)", marginTop: "6px",
+              cursor: "pointer", transition: "all 0.15s ease", textAlign: "left",
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = "var(--hover-bg)";
+              e.currentTarget.style.borderColor = "var(--b1)";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = "var(--raised)";
+              e.currentTarget.style.borderColor = "var(--b2)";
+            }}
+          >
             <div style={{
               width: "32px", height: "32px", borderRadius: "8px", flexShrink: 0,
               background: "linear-gradient(135deg, var(--cyan-10) 0%, rgba(6,182,212,0.08) 100%)",
@@ -703,7 +781,7 @@ export default function Sidebar({
               </div>
             </div>
             <ChevronRight size={13} style={{ color: "var(--t3)", flexShrink: 0 }} />
-          </div>
+          </button>
         </div>
       </aside>
 

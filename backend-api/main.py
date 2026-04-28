@@ -1075,16 +1075,30 @@ async def vision_query(data: VisionRequest, user: dict = Depends(get_current_use
 
 @app.get("/api/admin/workspaces")
 async def admin_list_workspaces(admin: dict = Depends(require_admin)):
-    """All workspaces across every user, with file counts — for the reindex picker."""
+    """Admin's own workspaces (all) + other users' public/shared workspaces only."""
+    admin_username = admin["username"]
     rows = await adb.get_all_users()
     result = []
     for row in rows:
         username = row[1]
         projects = await adb.get_all_projects(username)
         for proj in projects:
-            pname = proj["name"] if isinstance(proj, dict) else proj
+            if not isinstance(proj, dict):
+                continue
+            if proj.get("access") != "own":
+                continue  # skip cross-user duplicates counted under their real owner
+            visibility = proj.get("visibility", "private")
+            # Other users' private workspaces are never shown to the admin
+            if username != admin_username and visibility == "private":
+                continue
+            pname = proj["name"]
             files = await run_in_threadpool(list_files_in_project, pname, username)
-            result.append({"username": username, "project": pname, "file_count": len(files)})
+            result.append({
+                "username": username,
+                "project": pname,
+                "file_count": len(files),
+                "visibility": visibility,
+            })
     return {"workspaces": result}
 
 
@@ -1093,10 +1107,21 @@ class ReindexRequest(BaseModel):
 
 @app.post("/api/admin/reindex")
 async def admin_reindex(data: ReindexRequest, admin: dict = Depends(require_admin)):
-    """Drop and rebuild the vector index for each selected workspace. Returns job IDs for progress polling."""
+    """Drop and rebuild the vector index for each selected workspace. Returns job IDs for progress polling.
+    Only public and shared workspaces may be reindexed — private workspaces are silently skipped."""
     all_job_ids: list[str] = []
     for ws in data.workspaces:
         username, project = ws["username"], ws["project"]
+        # Server-side privacy guard: other users' private workspaces cannot be reindexed
+        if username != admin["username"]:
+            owner_projects = await adb.get_all_projects(username)
+            proj_info = next(
+                (p for p in owner_projects
+                 if isinstance(p, dict) and p["name"] == project and p.get("access") == "own"),
+                None,
+            )
+            if proj_info is None or proj_info.get("visibility", "private") == "private":
+                continue  # silently skip other users' private workspaces
         await run_in_threadpool(delete_project_index, username, project)
         files = await run_in_threadpool(list_files_in_project, project, username)
         for fname in files:

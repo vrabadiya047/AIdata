@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useToast } from '@/contexts/ToastContext';
 import { DatabaseZap, Check, CheckSquare, Square as SquareIcon, Loader2, X as XIcon, CheckCircle2 } from 'lucide-react';
 
-interface Workspace { username: string; project: string; file_count: number; }
+interface Workspace { username: string; project: string; file_count: number; visibility?: string; }
 type ReindexPhase = 'loading' | 'ready' | 'queuing' | 'indexing' | 'done' | 'error';
 
 function ActionButtons({ onBackground, onCancel }: { onBackground: () => void; onCancel: () => void }) {
@@ -358,6 +358,18 @@ export default function ReindexModal({ onClose, isAdmin = false }: { onClose: ()
                           <div style={{ fontSize: '11px', color: 'var(--t3)', marginTop: '1px' }}>{w.username}</div>
                         )}
                       </div>
+                      {w.visibility && w.visibility !== 'private' && (
+                        <span className="font-mono" style={{
+                          fontSize: '9px', flexShrink: 0,
+                          padding: '2px 7px', borderRadius: '4px',
+                          color: w.visibility === 'public' ? 'var(--green)' : 'var(--cyan)',
+                          background: w.visibility === 'public' ? 'rgba(16,185,129,0.08)' : 'rgba(34,211,238,0.08)',
+                          border: `1px solid ${w.visibility === 'public' ? 'rgba(16,185,129,0.2)' : 'rgba(34,211,238,0.2)'}`,
+                          letterSpacing: '0.06em', textTransform: 'uppercase',
+                        }}>
+                          {w.visibility}
+                        </span>
+                      )}
                       <span className="font-mono" style={{
                         fontSize: '10px', color: 'var(--t3)',
                         padding: '2px 7px', borderRadius: '4px',

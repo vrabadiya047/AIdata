@@ -3,10 +3,11 @@ import os
 import shutil
 from .config import DATA_DIR, STORAGE_DIR
 from .database import (
-    add_custom_project, 
-    delete_project_data, 
+    add_custom_project,
+    delete_project_data,
     delete_file_metadata,
-    save_file_project
+    save_file_project,
+    list_files_with_versions,
 )
 
 def handle_create_project(name, username):
@@ -62,8 +63,29 @@ def handle_delete_file(project_name, file_name, username):
     return True
 
 def list_files_in_project(project_name, username):
-    """Retrieves files only from the user's isolated folder."""
+    """Return list of file names (strings) present on disk."""
     proj_path = os.path.join(DATA_DIR, username, project_name)
     if os.path.exists(proj_path):
         return os.listdir(proj_path)
     return []
+
+
+def list_files_with_metadata(project_name, username):
+    """Return list of file dicts {name, version, upload_date} for files on disk.
+
+    Joins disk listing with DB version info — disk is authoritative for existence.
+    """
+    proj_path = os.path.join(DATA_DIR, username, project_name)
+    if not os.path.exists(proj_path):
+        return []
+    disk_files = set(os.listdir(proj_path))
+    db_map = {f["file_name"]: f for f in list_files_with_versions(project_name, username)}
+    result = []
+    for fname in sorted(disk_files):
+        info = db_map.get(fname, {})
+        result.append({
+            "name":        fname,
+            "version":     info.get("version"),
+            "upload_date": info.get("upload_date"),
+        })
+    return result

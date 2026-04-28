@@ -30,7 +30,11 @@ export default function DocumentPanel({ activeProject, onClose }: DocumentPanelP
     try {
       const res = await fetch(`/api/files?project=${encodeURIComponent(activeProject)}`);
       const data = await res.json();
-      setFiles(data.files ?? []);
+      setFiles(
+        (data.files ?? []).map((f: string | { name: string }) =>
+          typeof f === "string" ? f : f.name
+        )
+      );
     } catch {
       setFiles([]);
     }

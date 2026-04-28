@@ -21,7 +21,7 @@ export interface SessionPayload {
 }
 
 export async function encrypt(payload: SessionPayload): Promise<string> {
-  return new SignJWT(payload as Record<string, unknown>)
+  return new SignJWT(payload as unknown as Record<string, unknown>)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime(`${EXPIRE_HOURS}h`)

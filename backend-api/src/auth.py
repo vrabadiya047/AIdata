@@ -122,6 +122,35 @@ def get_all_users():
         return cur.fetchall()
 
 
+def search_usernames(prefix: str, limit: int = 8, exclude: str | None = None) -> list[str]:
+    """Return usernames starting with `prefix` (case-insensitive). Used by share-with autocomplete.
+
+    Returns at most `limit` results, alphabetised. The current user can be excluded so they
+    don't appear in their own share suggestions.
+    """
+    prefix = (prefix or "").strip()
+    if len(prefix) < 3:
+        return []
+    pattern = prefix.lower() + "%"
+    with _conn() as conn:
+        cur = conn.cursor()
+        if exclude:
+            cur.execute(
+                'SELECT username FROM users '
+                'WHERE LOWER(username) LIKE %s AND username <> %s '
+                'ORDER BY username ASC LIMIT %s',
+                (pattern, exclude, limit),
+            )
+        else:
+            cur.execute(
+                'SELECT username FROM users '
+                'WHERE LOWER(username) LIKE %s '
+                'ORDER BY username ASC LIMIT %s',
+                (pattern, limit),
+            )
+        return [row[0] for row in cur.fetchall()]
+
+
 # ─── MFA (TOTP) ───────────────────────────────────────────────────────────────
 
 def mfa_generate_secret(username: str) -> str:

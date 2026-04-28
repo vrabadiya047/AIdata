@@ -12,6 +12,7 @@ llama-index-postprocessor-sbert-rerank>=0.3.0
 llama-index-readers-file>=0.4.0
 llama-index-vector-stores-qdrant>=0.4.0
 qdrant-client>=1.9.0
+llama-index-graph-stores-neo4j>=0.3.0
 sentence-transformers>=3.0.0
 rank-bm25>=0.2.2
 pymupdf>=1.24.0

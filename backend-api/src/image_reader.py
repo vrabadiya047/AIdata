@@ -117,3 +117,63 @@ def get_image_file_extractor() -> dict:
     """Returns extension → reader mapping for use in SimpleDirectoryReader."""
     reader = OCRImageReader()
     return {ext: reader for ext in IMAGE_EXTENSIONS}
+
+
+class OCRPDFReader(BaseReader):
+    """PDF reader with per-page OCR fallback for scanned documents.
+
+    PyMuPDF extracts the text layer first. If a page yields fewer than
+    MIN_CHARS characters (indicating a scanned/image-only page), the page
+    is rendered at 2× resolution and passed through Tesseract OCR.
+    """
+
+    MIN_CHARS = 50
+
+    def load_data(self, file, extra_info=None):
+        import fitz  # PyMuPDF (already a dependency via pymupdf)
+
+        file_path = str(file)
+        meta = extra_info or {}
+        docs = []
+
+        try:
+            pdf = fitz.open(file_path)
+        except Exception as e:
+            print(f"⚠️  Cannot open PDF {file_path}: {e}")
+            return []
+
+        for page_num, page in enumerate(pdf, start=1):
+            text = page.get_text().strip()
+
+            if len(text) < self.MIN_CHARS:
+                ocr_text = self._ocr_page(page, page_num, file_path)
+                if ocr_text:
+                    text = ocr_text
+
+            if text:
+                docs.append(Document(
+                    text=text,
+                    extra_info={**meta, "page_label": str(page_num)},
+                ))
+
+        pdf.close()
+        return docs
+
+    def _ocr_page(self, page, page_num: int, file_path: str) -> str:
+        if not _ensure_tesseract():
+            return ""
+        try:
+            import io
+            import fitz
+            import pytesseract
+            from PIL import Image
+
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            text = pytesseract.image_to_string(img).strip()
+            if text:
+                print(f"   📷 OCR used for page {page_num} of {os.path.basename(file_path)}")
+            return text
+        except Exception as e:
+            print(f"⚠️  OCR failed for page {page_num} of {file_path}: {e}")
+            return ""

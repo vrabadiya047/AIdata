@@ -22,6 +22,7 @@ interface SidebarProps {
   onSelectProject: (project: string) => void;
   onSelectThread: (thread: string) => void;
   onOpenDocs: () => void;
+  wsRefreshKey?: number;
 }
 
 // ─── SectionLabel ─────────────────────────────────────────────────────────────
@@ -162,7 +163,7 @@ function ActionButtons({
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 export default function Sidebar({
-  activeProject, activeThread, onSelectProject, onSelectThread, onOpenDocs,
+  activeProject, activeThread, onSelectProject, onSelectThread, onOpenDocs, wsRefreshKey,
 }: SidebarProps) {
   const { session } = useSession();
   const router = useRouter();
@@ -214,13 +215,13 @@ export default function Sidebar({
     const ws = await getWorkspaces(username);
     setWorkspaces(ws);
     if (!activeProject && ws.length > 0) onSelectProject(ws[0].name);
-  }, [username]);
+  }, [username, wsRefreshKey]);
 
   const loadThreads = useCallback(async () => {
     if (!username || !activeProject) { setThreads([]); return; }
     const t = await getProjectThreads(activeProject, username);
     setThreads(t);
-  }, [username, activeProject]);
+  }, [username, activeProject, activeThread]);
 
   useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
   useEffect(() => { loadThreads(); }, [loadThreads]);

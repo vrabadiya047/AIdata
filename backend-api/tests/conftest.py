@@ -9,8 +9,10 @@ Conftest — runs before any test file is imported.
 import sys
 import os
 import types
+import dataclasses
 import tempfile
 import pytest
+from typing import Any, List
 from unittest.mock import MagicMock
 
 
@@ -43,6 +45,7 @@ for _path in [
     "llama_index.core.query_engine",
     "llama_index.core.indices", "llama_index.core.indices.vector_store",
     "llama_index.core.vector_stores",
+    "llama_index.core.tools",
     # LlamaIndex extras
     "llama_index.llms", "llama_index.llms.ollama",
     "llama_index.embeddings", "llama_index.embeddings.huggingface",
@@ -67,6 +70,43 @@ for _path in [
     "PIL", "PIL.Image",
 ]:
     _stub(_path)
+
+
+# ── Real agent workflow event classes (isinstance checks must work) ────────────
+# Both main.py and test_agent.py import these from the same path, so they must
+# be the same real classes — not MagicMocks — for isinstance() to succeed.
+
+@dataclasses.dataclass
+class AgentStream:
+    delta: str
+    response: str = ""
+    current_agent_name: str = ""
+    tool_calls: List[Any] = dataclasses.field(default_factory=list)
+    raw: Any = None
+
+
+@dataclasses.dataclass
+class ToolCallResult:
+    tool_name: str
+    tool_kwargs: Any = None
+    tool_id: str = ""
+    tool_output: Any = None
+    return_direct: bool = False
+
+
+_wf_events_mod = types.ModuleType("llama_index.core.agent.workflow.workflow_events")
+_wf_events_mod.AgentStream = AgentStream        # type: ignore[attr-defined]
+_wf_events_mod.ToolCallResult = ToolCallResult  # type: ignore[attr-defined]
+
+_wf_mod = _StubModule("llama_index.core.agent.workflow")
+object.__setattr__(_wf_mod, "workflow_events", _wf_events_mod)
+
+_agent_mod = _StubModule("llama_index.core.agent")
+object.__setattr__(_agent_mod, "workflow", _wf_mod)
+
+sys.modules["llama_index.core.agent"] = _agent_mod
+sys.modules["llama_index.core.agent.workflow"] = _wf_mod
+sys.modules["llama_index.core.agent.workflow.workflow_events"] = _wf_events_mod
 
 
 # ── Temp workspace for file-system operations ─────────────────────────────────

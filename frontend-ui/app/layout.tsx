@@ -2,6 +2,8 @@ import "./globals.css";
 import type { Metadata } from "next";
 import { SessionProvider } from "@/contexts/SessionContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { CommandProvider } from "@/contexts/CommandContext";
+import { ToastProvider } from "@/contexts/ToastContext";
 
 export const metadata: Metadata = {
   title: "Sovereign AI | Private Enterprise RAG",
@@ -22,9 +24,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="antialiased" suppressHydrationWarning>
         <ThemeProvider>
           <SessionProvider>
-            <div className="flex h-screen w-full overflow-hidden">
-              {children}
-            </div>
+            <ToastProvider>
+              <CommandProvider>
+                <div className="flex h-screen w-full overflow-hidden">
+                  {children}
+                </div>
+              </CommandProvider>
+            </ToastProvider>
           </SessionProvider>
         </ThemeProvider>
       </body>

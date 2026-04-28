@@ -6,6 +6,7 @@ import { useSession } from '@/contexts/SessionContext';
 import {
   Shield, Plus, Trash2, RefreshCw, ArrowLeft,
   Users, Activity, Eye, FileText, Search, Hash, Smartphone,
+  Copy, Check, RotateCw, KeyRound, X as XIcon,
 } from 'lucide-react';
 
 interface User { id: number; username: string; role: string; mfa_enabled: boolean; }
@@ -157,6 +158,72 @@ function fmt(ts: string) {
   try { return new Date(ts).toLocaleString(); } catch { return ts; }
 }
 
+function CredRow({ label, value, mono, highlight }: {
+  label: string; value: string; mono?: boolean; highlight?: boolean;
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: '12px',
+      padding: '10px 12px', marginBottom: '6px',
+      background: highlight ? 'rgba(245,158,11,0.06)' : 'var(--raised)',
+      border: highlight ? '1px solid rgba(245,158,11,0.25)' : '1px solid var(--b1)',
+      borderRadius: '7px',
+    }}>
+      <span className="font-mono" style={{
+        fontSize: '9.5px', color: 'var(--t3)', letterSpacing: '0.08em',
+        textTransform: 'uppercase', minWidth: '80px',
+      }}>
+        {label}
+      </span>
+      <code className={mono ? 'font-mono' : ''} style={{
+        flex: 1, fontSize: mono ? '13px' : '12.5px',
+        color: 'var(--t1)', fontWeight: highlight ? 600 : 400,
+        userSelect: 'all', wordBreak: 'break-all',
+        letterSpacing: mono ? '0.05em' : 0,
+      }}>
+        {value}
+      </code>
+    </div>
+  );
+}
+
+// ── Crypto-strong random password generator ──────────────────────────────────
+// 14 chars from a curated alphabet that excludes look-alike characters
+// (0/O/o, 1/l/I) and shell-fragile symbols. Guarantees at least one of each
+// character class so it always satisfies typical password policies.
+const _PWD_LOWER  = 'abcdefghijkmnpqrstuvwxyz';
+const _PWD_UPPER  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+const _PWD_DIGIT  = '23456789';
+const _PWD_SYMBOL = '!@#$%^&*-_=+';
+const _PWD_ALPHABET = _PWD_LOWER + _PWD_UPPER + _PWD_DIGIT + _PWD_SYMBOL;
+
+function _pickRandom(pool: string, n: number): string[] {
+  const out: string[] = [];
+  const buf = new Uint32Array(n);
+  crypto.getRandomValues(buf);
+  for (let i = 0; i < n; i++) out.push(pool[buf[i] % pool.length]);
+  return out;
+}
+
+function generateTempPassword(length = 14): string {
+  const required = [
+    ..._pickRandom(_PWD_LOWER,  2),
+    ..._pickRandom(_PWD_UPPER,  2),
+    ..._pickRandom(_PWD_DIGIT,  2),
+    ..._pickRandom(_PWD_SYMBOL, 1),
+  ];
+  const rest = _pickRandom(_PWD_ALPHABET, Math.max(0, length - required.length));
+  const all = [...required, ...rest];
+  // Fisher-Yates shuffle with crypto randomness
+  const idxBuf = new Uint32Array(all.length);
+  crypto.getRandomValues(idxBuf);
+  for (let i = all.length - 1; i > 0; i--) {
+    const j = idxBuf[i] % (i + 1);
+    [all[i], all[j]] = [all[j], all[i]];
+  }
+  return all.join('');
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Page
 // ═════════════════════════════════════════════════════════════════════════════
@@ -172,10 +239,12 @@ export default function AdminPage() {
 
   const [tab, setTab] = useState<'users' | 'audit' | 'privacy'>('users');
   const [newUsername, setNewUsername] = useState('');
-  const [newPassword, setNewPassword] = useState('');
+  const [generatedPassword, setGeneratedPassword] = useState(() => generateTempPassword());
   const [newRole, setNewRole] = useState('User');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [createdCreds, setCreatedCreds] = useState<{ username: string; password: string; role: string } | null>(null);
+  const [copied, setCopied] = useState<'pwd' | 'both' | null>(null);
 
   useEffect(() => {
     if (!loading && session?.role !== 'Admin') router.replace('/');
@@ -210,17 +279,41 @@ export default function AdminPage() {
   }
 
   async function createUser() {
-    if (!newUsername || !newPassword) return;
+    if (!newUsername.trim()) { setError('Username required'); return; }
     setCreating(true); setError('');
+    const username = newUsername.trim();
+    const password = generatedPassword;
+    const role = newRole;
     const res = await fetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: newUsername, password: newPassword, role: newRole }),
+      body: JSON.stringify({ username, password, role }),
     });
     setCreating(false);
-    if (!res.ok) { setError((await res.json()).error ?? 'Failed'); return; }
-    setNewUsername(''); setNewPassword(''); setNewRole('User');
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error ?? body.detail ?? 'Failed');
+      return;
+    }
+    setCreatedCreds({ username, password, role });
+    setNewUsername('');
+    setGeneratedPassword(generateTempPassword());
+    setNewRole('User');
     await loadUsers();
+  }
+
+  async function copyToClipboard(text: string, key: 'pwd' | 'both') {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      setError('Clipboard write blocked by browser');
+    }
+  }
+
+  function regeneratePassword() {
+    setGeneratedPassword(generateTempPassword());
   }
 
   async function deleteUser(username: string) {
@@ -288,27 +381,185 @@ export default function AdminPage() {
         {tab === 'users' && (
           <>
             <div style={{ background: 'var(--surface)', border: '1px solid var(--b2)', borderRadius: '12px', padding: '20px', marginBottom: '20px' }}>
-              <div className="font-mono" style={{ fontSize: '10px', color: 'var(--t3)', letterSpacing: '0.1em', marginBottom: '14px' }}>ADD USER</div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="Username"
-                  style={{ flex: '1 1 140px', padding: '9px 12px', background: 'var(--raised)', border: '1px solid var(--b2)', borderRadius: '8px', color: 'var(--t1)', fontSize: '13px', outline: 'none' }} />
-                <input value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Temp password" type="password"
-                  style={{ flex: '1 1 140px', padding: '9px 12px', background: 'var(--raised)', border: '1px solid var(--b2)', borderRadius: '8px', color: 'var(--t1)', fontSize: '13px', outline: 'none' }} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                <div className="font-mono" style={{ fontSize: '10px', color: 'var(--t3)', letterSpacing: '0.1em' }}>
+                  ADD USER
+                </div>
+                <div style={{ fontSize: '10.5px', color: 'var(--t3)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <KeyRound size={11} style={{ color: 'var(--amber)' }} />
+                  Auto-generated temporary password
+                </div>
+              </div>
+
+              {/* Top row: username + role + create */}
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                <input
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createUser()}
+                  placeholder="Username"
+                  autoComplete="off"
+                  style={{ flex: '1 1 200px', padding: '9px 12px', background: 'var(--raised)', border: '1px solid var(--b2)', borderRadius: '8px', color: 'var(--t1)', fontSize: '13px', outline: 'none' }}
+                />
                 <select value={newRole} onChange={(e) => setNewRole(e.target.value)}
                   style={{ padding: '9px 12px', background: 'var(--raised)', border: '1px solid var(--b2)', borderRadius: '8px', color: 'var(--t1)', fontSize: '13px', outline: 'none' }}>
                   <option>User</option>
                   <option>Admin</option>
                 </select>
-                <button onClick={createUser} disabled={creating} style={{
+                <button onClick={createUser} disabled={creating || !newUsername.trim()} style={{
                   display: 'flex', alignItems: 'center', gap: '6px', padding: '9px 16px',
-                  background: 'rgba(245,158,11,0.85)', border: 'none', borderRadius: '8px',
-                  color: 'var(--void)', fontSize: '13px', fontWeight: 600, cursor: creating ? 'not-allowed' : 'pointer',
+                  background: creating || !newUsername.trim() ? 'rgba(245,158,11,0.4)' : 'rgba(245,158,11,0.85)',
+                  border: 'none', borderRadius: '8px',
+                  color: 'var(--void)', fontSize: '13px', fontWeight: 600,
+                  cursor: creating || !newUsername.trim() ? 'not-allowed' : 'pointer',
                 }}>
-                  <Plus size={13} /> Create
+                  <Plus size={13} /> Create account
                 </button>
+              </div>
+
+              {/* Generated password preview */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '10px 12px', background: 'var(--raised)',
+                border: '1px dashed var(--b2)', borderRadius: '8px',
+              }}>
+                <KeyRound size={13} style={{ color: 'var(--amber)', flexShrink: 0 }} />
+                <code className="font-mono" style={{
+                  flex: 1, fontSize: '13px', color: 'var(--t1)', letterSpacing: '0.06em',
+                  userSelect: 'all',
+                }}>
+                  {generatedPassword}
+                </code>
+                <button
+                  onClick={() => copyToClipboard(generatedPassword, 'pwd')}
+                  title="Copy password"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    padding: '5px 9px', background: 'transparent',
+                    border: '1px solid var(--b2)', borderRadius: '6px',
+                    color: copied === 'pwd' ? 'var(--green)' : 'var(--t2)',
+                    fontSize: '11px', cursor: 'pointer',
+                  }}
+                >
+                  {copied === 'pwd' ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+                </button>
+                <button
+                  onClick={regeneratePassword}
+                  title="Generate new password"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    padding: '5px 9px', background: 'transparent',
+                    border: '1px solid var(--b2)', borderRadius: '6px',
+                    color: 'var(--t2)', fontSize: '11px', cursor: 'pointer',
+                  }}
+                >
+                  <RotateCw size={11} /> Regenerate
+                </button>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--t3)', marginTop: '8px', lineHeight: 1.5 }}>
+                The user will be required to change this password on first sign-in.
+                Make sure to copy it before clicking Create — it cannot be recovered later.
               </div>
               {error && <div style={{ marginTop: '10px', fontSize: '12px', color: '#f87171' }}>{error}</div>}
             </div>
+
+            {/* ── Post-creation reveal modal ── */}
+            {createdCreds && (
+              <div
+                onClick={() => setCreatedCreds(null)}
+                style={{
+                  position: 'fixed', inset: 0, zIndex: 1000,
+                  background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px',
+                  animation: 'fadeIn 0.14s ease',
+                }}
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    width: '100%', maxWidth: '480px',
+                    background: 'var(--surface)', border: '1px solid var(--b2)',
+                    borderRadius: '14px', overflow: 'hidden',
+                    boxShadow: '0 24px 80px rgba(0,0,0,0.5)',
+                    animation: 'fadeUp 0.18s cubic-bezier(0.16,1,0.3,1)',
+                  }}
+                >
+                  <div style={{
+                    padding: '18px 22px', borderBottom: '1px solid var(--b1)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '32px', height: '32px', borderRadius: '8px',
+                        background: 'rgba(16,185,129,0.10)', border: '1px solid rgba(16,185,129,0.30)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--green)',
+                      }}>
+                        <Check size={16} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--t1)' }}>
+                          Account created
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--t3)', marginTop: '1px' }}>
+                          Send these credentials to the user securely
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setCreatedCreds(null)}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        width: '26px', height: '26px', borderRadius: '6px',
+                        background: 'transparent', border: '1px solid var(--b2)',
+                        color: 'var(--t2)', cursor: 'pointer',
+                      }}
+                    >
+                      <XIcon size={13} />
+                    </button>
+                  </div>
+
+                  <div style={{ padding: '18px 22px' }}>
+                    <CredRow label="Username" value={createdCreds.username} />
+                    <CredRow label="Role"     value={createdCreds.role} />
+                    <CredRow label="Temporary password" value={createdCreds.password} mono highlight />
+
+                    <button
+                      onClick={() => copyToClipboard(
+                        `Username: ${createdCreds.username}\nPassword: ${createdCreds.password}\nRole: ${createdCreds.role}`,
+                        'both'
+                      )}
+                      style={{
+                        width: '100%', marginTop: '14px',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                        padding: '10px', borderRadius: '8px', cursor: 'pointer',
+                        background: copied === 'both' ? 'rgba(16,185,129,0.15)' : 'var(--amber-10)',
+                        border: copied === 'both'
+                          ? '1px solid rgba(16,185,129,0.35)'
+                          : '1px solid var(--amber-25)',
+                        color: copied === 'both' ? 'var(--green)' : 'var(--amber)',
+                        fontSize: '12.5px', fontWeight: 600,
+                      }}
+                    >
+                      {copied === 'both' ? <><Check size={13} /> Copied to clipboard</> : <><Copy size={13} /> Copy all credentials</>}
+                    </button>
+
+                    <div style={{
+                      marginTop: '14px', padding: '10px 12px',
+                      background: 'rgba(245,158,11,0.05)',
+                      border: '1px solid rgba(245,158,11,0.20)', borderRadius: '7px',
+                      fontSize: '11.5px', color: 'var(--t2)', lineHeight: 1.5,
+                      display: 'flex', gap: '8px',
+                    }}>
+                      <Shield size={13} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: '1px' }} />
+                      <span>
+                        This password is shown <strong style={{ color: 'var(--t1)' }}>only once</strong>.
+                        Once you close this dialog, it cannot be retrieved — only reset.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div style={{ background: 'var(--surface)', border: '1px solid var(--b2)', borderRadius: '12px', overflow: 'hidden' }}>
               <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--b1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, BookOpen, Shield, Lock, ChevronRight, Cpu, Layers } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, BookOpen, Shield, Lock, ChevronRight, Cpu, Layers, Zap, GitCompare, ChevronDown, ChevronUp } from "lucide-react";
+import DiffModal from "./DiffModal";
 import { getThreadHistory } from "@/app/actions";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
@@ -17,7 +18,7 @@ interface AttachedFile {
 
 interface Source {
   file: string;
-  page?: number | null;
+  pages: number[];
   score: number;
   excerpt?: string;
 }
@@ -27,6 +28,7 @@ interface Message {
   content: string;
   attachments?: { name: string; preview?: string; isImage: boolean }[];
   sources?: Source[];
+  thoughts?: string[];
 }
 
 interface ChatInterfaceProps {
@@ -34,6 +36,8 @@ interface ChatInterfaceProps {
   activeThread: string;
   username: string;
   onNewThread: (threadId: string) => void;
+  onRenameProject?: (oldName: string, newName: string) => void;
+  onRenameThread?: (oldId: string, newId: string) => void;
 }
 
 
@@ -55,6 +59,45 @@ function ThinkingDots() {
           width: "7px", height: "7px", borderRadius: "50%", background: "var(--amber)",
         }} />
       ))}
+    </div>
+  );
+}
+
+function ThoughtSteps({ thoughts, streaming }: { thoughts: string[]; streaming?: boolean }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{ marginBottom: "12px" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: "5px",
+          padding: "4px 9px", borderRadius: "6px", border: "1px solid var(--b2)",
+          background: "var(--raised)", color: "var(--t3)", fontSize: "11px",
+          cursor: "pointer", marginBottom: open ? "8px" : 0,
+        }}
+      >
+        <Zap size={10} style={{ color: streaming ? "var(--amber)" : "var(--t3)" }} />
+        <span>{thoughts.length} agent step{thoughts.length !== 1 ? "s" : ""}</span>
+        {streaming && <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: "var(--amber)", animation: "pulse 1s ease-in-out infinite" }} />}
+        {open ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+      </button>
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          {thoughts.map((t, i) => (
+            <div key={i} style={{
+              padding: "8px 12px", borderRadius: "8px",
+              background: "var(--raised)", border: "1px solid var(--b1)",
+              borderLeft: "2px solid rgba(245,158,11,0.4)",
+              fontSize: "11px", color: "var(--t2)", lineHeight: "1.6", whiteSpace: "pre-wrap",
+            }}>
+              <span className="font-mono" style={{ fontSize: "9px", color: "var(--t3)", display: "block", marginBottom: "3px" }}>
+                Step {i + 1}
+              </span>
+              {t}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -104,7 +147,12 @@ function CitationChip({ source, index, open, onToggle }: {
   source: Source; index: number; open: boolean; onToggle: () => void;
 }) {
   const [hov, setHov] = useState(false);
-  const label = source.page != null ? `p.${source.page}` : null;
+  const pages = source.pages ?? [];
+  const label = pages.length === 1
+    ? `p.${pages[0]}`
+    : pages.length > 1
+      ? `p.${pages.slice(0, 2).join(", ")}${pages.length > 2 ? ` +${pages.length - 2}` : ""}`
+      : null;
   return (
     <button
       onClick={onToggle}
@@ -189,11 +237,13 @@ function SourcesRow({ sources, analyzing }: { sources: Source[]; analyzing?: boo
           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
             <FileText size={10} style={{ color: "var(--amber)" }} />
             <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--t1)" }}>{active.file}</span>
-            {active.page != null && (
+            {active.pages && active.pages.length > 0 && (
               <span className="font-mono" style={{
                 fontSize: "9px", color: "var(--amber)", background: "rgba(245,158,11,0.08)",
                 padding: "1px 5px", borderRadius: "3px", border: "1px solid var(--amber-25)",
-              }}>page {active.page}</span>
+              }}>
+                {active.pages.length === 1 ? `p. ${active.pages[0]}` : `pp. ${active.pages.join(", ")}`}
+              </span>
             )}
           </div>
           <p style={{
@@ -221,9 +271,10 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
-function AIMessage({ content, thinking, streaming, sources, indexingFile }: {
+function AIMessage({ content, thinking, streaming, sources, indexingFile, thoughts, ragStatus }: {
   content: string; thinking?: boolean; streaming?: boolean; sources?: Source[];
-  indexingFile?: string | null;
+  indexingFile?: string | null; thoughts?: string[];
+  ragStatus?: { type: string; message: string } | null;
 }) {
   return (
     <div className="fade-up" style={{ display: "flex", gap: "14px", alignItems: "flex-start", paddingRight: "12%" }}>
@@ -238,11 +289,35 @@ function AIMessage({ content, thinking, streaming, sources, indexingFile }: {
         <Shield size={14} style={{ color: "var(--amber)" }} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Agent thought steps — shown before text in agent mode */}
+        {thoughts && thoughts.length > 0 && <ThoughtSteps thoughts={thoughts} streaming={thinking || streaming} />}
+
         {/* Sources — shown as soon as they arrive, before text */}
         {sources && sources.length > 0 && <SourcesRow sources={sources} analyzing={thinking || streaming} />}
 
         {thinking && !content ? (
           <>
+            {/* Self-RAG status badge — grading / retry feedback */}
+            {ragStatus ? (
+              <div style={{
+                display: "flex", alignItems: "center", gap: "7px",
+                marginBottom: "10px",
+              }}>
+                <span style={{
+                  width: "5px", height: "5px", borderRadius: "50%",
+                  background: ragStatus.type === "retry" ? "var(--amber)" : "var(--t3)",
+                  flexShrink: 0,
+                  animation: "thinking-pulse 1.2s ease-in-out infinite",
+                }} />
+                <span className="font-mono" style={{
+                  fontSize: "10px", letterSpacing: "0.07em",
+                  color: ragStatus.type === "retry" ? "var(--amber)" : "var(--t3)",
+                  opacity: ragStatus.type === "retry" ? 0.9 : 0.65,
+                }}>
+                  {ragStatus.message}
+                </span>
+              </div>
+            ) : null}
             {indexingFile && (
               <div className="font-mono" style={{
                 fontSize: "10px", color: "var(--amber)", opacity: 0.75,
@@ -251,7 +326,7 @@ function AIMessage({ content, thinking, streaming, sources, indexingFile }: {
                 Indexing {indexingFile}…
               </div>
             )}
-            <ThinkingDots />
+            {!ragStatus && <ThinkingDots />}
             <div style={{
               height: "2px", width: "52px", marginTop: "10px", borderRadius: "2px",
               background: "linear-gradient(90deg, var(--amber-25) 0%, transparent 100%)",
@@ -383,6 +458,76 @@ function AttachButton({ onClick, disabled }: { onClick: () => void; disabled: bo
   );
 }
 
+// ─── InlineEdit ───────────────────────────────────────────────────────────────
+
+function InlineEdit({
+  value, onSave, textStyle, placeholder,
+}: {
+  value: string;
+  onSave: (v: string) => void;
+  textStyle?: React.CSSProperties;
+  placeholder?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { if (editing) { inputRef.current?.focus(); inputRef.current?.select(); } }, [editing]);
+
+  function commit() {
+    setEditing(false);
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== value) onSave(trimmed);
+    else setDraft(value);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === "Enter") { e.preventDefault(); commit(); }
+          if (e.key === "Escape") { setDraft(value); setEditing(false); }
+        }}
+        placeholder={placeholder}
+        style={{
+          background: "transparent",
+          border: "none",
+          borderBottom: "1px solid var(--amber)",
+          outline: "none",
+          color: "var(--t1)",
+          padding: "0 2px",
+          minWidth: "60px",
+          maxWidth: "240px",
+          width: `${Math.max(draft.length, 4)}ch`,
+          ...textStyle,
+        }}
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => setEditing(true)}
+      title="Click to rename"
+      style={{
+        cursor: "text",
+        borderBottom: "1px solid transparent",
+        transition: "border-color 0.15s",
+        ...textStyle,
+      }}
+      onMouseEnter={e => (e.currentTarget.style.borderBottomColor = "var(--b2)")}
+      onMouseLeave={e => (e.currentTarget.style.borderBottomColor = "transparent")}
+    >
+      {value || placeholder}
+    </span>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 async function waitForJob(jobId: string, signal: AbortSignal): Promise<void> {
@@ -399,13 +544,16 @@ async function waitForJob(jobId: string, signal: AbortSignal): Promise<void> {
   }
 }
 
-export default function ChatInterface({ activeProject, activeThread, username, onNewThread }: ChatInterfaceProps) {
+export default function ChatInterface({ activeProject, activeThread, username, onNewThread, onRenameProject, onRenameThread }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [indexingFile, setIndexingFile] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [currentThread, setCurrentThread] = useState(activeThread);
+  const [agentMode, setAgentMode] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [ragStatus, setRagStatus] = useState<{ type: string; message: string } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -558,8 +706,9 @@ export default function ChatInterface({ activeProject, activeThread, username, o
           signal: abortRef.current.signal,
         });
       } else {
-        // RAG path: text-only query against indexed documents
-        response = await fetch("/api/chat", {
+        // RAG or Agent path
+        const endpoint = agentMode ? "/api/agent" : "/api/chat";
+        response = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt: prompt || `Describe the attached file(s): ${docFiles.map(f => f.name).join(", ")}`, project: activeProject, username, thread_id: threadId }),
@@ -606,13 +755,23 @@ export default function ChatInterface({ activeProject, activeThread, username, o
             if (data === "[DONE]") break;
             try {
               const parsed = JSON.parse(data);
-              if (parsed.sources) {
+              if (parsed.thought !== undefined) {
+                setMessages(prev => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  next[next.length - 1] = { ...last, thoughts: [...(last.thoughts ?? []), parsed.thought] };
+                  return next;
+                });
+              } else if (parsed.status) {
+                setRagStatus(parsed.status);
+              } else if (parsed.sources) {
                 setMessages(prev => {
                   const next = [...prev];
                   next[next.length - 1] = { ...next[next.length - 1], sources: parsed.sources };
                   return next;
                 });
               } else if (parsed.token !== undefined) {
+                setRagStatus(null);
                 accumulated += parsed.token;
                 setMessages(prev => {
                   const next = [...prev];
@@ -653,6 +812,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       streamingRef.current = false;
       userStoppedRef.current = false;
       setIndexingFile(null);
+      setRagStatus(null);
       setIsLoading(false);
     }
   };
@@ -674,15 +834,60 @@ export default function ChatInterface({ activeProject, activeThread, username, o
           <Layers size={12} style={{ color: "var(--t3)" }} />
           <span style={{ fontSize: "12px", color: "var(--t3)" }}>Workspace</span>
           <ChevronRight size={11} style={{ color: "var(--b2)" }} />
-          <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--t1)" }}>{activeProject || "No workspace selected"}</span>
-          {activeThread && activeThread !== "General" && (
+          {activeProject ? (
+            <InlineEdit
+              value={activeProject}
+              placeholder="workspace name"
+              textStyle={{ fontSize: "13px", fontWeight: 600, color: "var(--t1)" }}
+              onSave={async (newName) => {
+                await fetch("/api/projects", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ old_name: activeProject, new_name: newName }),
+                });
+                onRenameProject?.(activeProject, newName);
+              }}
+            />
+          ) : (
+            <span style={{ fontSize: "13px", color: "var(--t3)" }}>No workspace selected</span>
+          )}
+          {activeProject && (
             <>
               <ChevronRight size={11} style={{ color: "var(--b2)" }} />
-              <span style={{ fontSize: "12px", color: "var(--t2)", maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeThread}</span>
+              <InlineEdit
+                value={currentThread}
+                placeholder="chat name"
+                textStyle={{ fontSize: "12px", color: "var(--t2)" }}
+                onSave={async (newId) => {
+                  await fetch("/api/threads", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ project: activeProject, old_id: currentThread, new_id: newId }),
+                  });
+                  setCurrentThread(newId);
+                  onRenameThread?.(currentThread, newId);
+                }}
+              />
             </>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          {/* Compare button */}
+          {activeProject && (
+            <button
+              onClick={() => setShowDiff(true)}
+              title="Compare two documents"
+              style={{
+                display: "flex", alignItems: "center", gap: "5px",
+                padding: "4px 9px", borderRadius: "6px", border: "1px solid var(--b2)",
+                background: "var(--raised)", color: "var(--t3)", fontSize: "9px",
+                cursor: "pointer", transition: "all 0.15s ease",
+              }}
+            >
+              <GitCompare size={10} />
+              <span className="font-mono" style={{ letterSpacing: "0.08em" }}>COMPARE</span>
+            </button>
+          )}
           {[
             { icon: Lock, label: "ENCRYPTED", color: "var(--green)", bg: "var(--green-10)" },
             { icon: Cpu, label: "LOCAL", color: "var(--cyan)", bg: "var(--cyan-10)" },
@@ -718,7 +923,9 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                   thinking={isLoading && i === messages.length - 1 && !msg.content}
                   streaming={isLoading && i === messages.length - 1 && !!msg.content}
                   sources={msg.sources}
+                  thoughts={msg.thoughts}
                   indexingFile={isLoading && i === messages.length - 1 ? indexingFile : null}
+                  ragStatus={isLoading && i === messages.length - 1 ? ragStatus : null}
                 />
               )
             )}
@@ -780,6 +987,25 @@ export default function ChatInterface({ activeProject, activeThread, username, o
               {/* Attach button */}
               <AttachButton onClick={handleAttachClick} disabled={isLoading} />
 
+              {/* Agent mode toggle */}
+              <button
+                onClick={() => setAgentMode(m => !m)}
+                disabled={isLoading}
+                title={agentMode ? "Switch to RAG mode" : "Switch to Agent mode (tools + reasoning)"}
+                style={{
+                  display: "flex", alignItems: "center", gap: "4px",
+                  padding: "4px 8px", borderRadius: "7px", flexShrink: 0,
+                  border: `1px solid ${agentMode ? "rgba(245,158,11,0.5)" : "var(--b2)"}`,
+                  background: agentMode ? "rgba(245,158,11,0.1)" : "transparent",
+                  color: agentMode ? "var(--amber)" : "var(--t3)",
+                  fontSize: "10px", fontWeight: 600, cursor: isLoading ? "not-allowed" : "pointer",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <Zap size={10} />
+                {agentMode ? "AGENT" : "RAG"}
+              </button>
+
               {/* Prompt indicator */}
               <span className="font-mono" style={{
                 fontSize: "15px", color: "var(--amber-40)",
@@ -829,6 +1055,11 @@ export default function ChatInterface({ activeProject, activeThread, username, o
           </p>
         </div>
       </div>
+
+      {/* Diff / compare modal */}
+      {showDiff && activeProject && (
+        <DiffModal project={activeProject} onClose={() => setShowDiff(false)} />
+      )}
     </div>
   );
 }

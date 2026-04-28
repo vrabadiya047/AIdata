@@ -6,6 +6,11 @@ import pytest
 from src.database import add_custom_project, save_file_project
 
 
+def _names(files: list) -> list[str]:
+    """/api/files now returns dicts with 'name' key, not bare strings."""
+    return [f["name"] if isinstance(f, dict) else f for f in files]
+
+
 # ── GET /api/files ────────────────────────────────────────────────────────────
 
 def test_list_files_unauthenticated(client):
@@ -32,7 +37,7 @@ def test_list_files_after_upload(auth_client):
 
     r = auth_client.get("/api/files", params={"project": "FilesListProj"})
     assert r.status_code == 200
-    assert "hello.txt" in r.json()["files"]
+    assert "hello.txt" in _names(r.json()["files"])
 
 
 # ── POST /api/upload ──────────────────────────────────────────────────────────
@@ -66,7 +71,7 @@ def test_upload_file_appears_in_listing(auth_client):
         data={"project": "UploadListProj"},
     )
     r = auth_client.get("/api/files", params={"project": "UploadListProj"})
-    assert "notes.txt" in r.json()["files"]
+    assert "notes.txt" in _names(r.json()["files"])
 
 
 def test_upload_sanitises_filename(auth_client):
@@ -103,7 +108,7 @@ def test_delete_file_removes_from_listing(auth_client):
     )
     # Confirm present
     r = auth_client.get("/api/files", params={"project": "DeleteFileProj"})
-    assert "todelete.txt" in r.json()["files"]
+    assert "todelete.txt" in _names(r.json()["files"])
 
     # Delete
     r = auth_client.delete("/api/files/todelete.txt", params={"project": "DeleteFileProj"})
@@ -112,7 +117,7 @@ def test_delete_file_removes_from_listing(auth_client):
 
     # Confirm gone
     r = auth_client.get("/api/files", params={"project": "DeleteFileProj"})
-    assert "todelete.txt" not in r.json()["files"]
+    assert "todelete.txt" not in _names(r.json()["files"])
 
 
 def test_delete_nonexistent_file_is_graceful(auth_client):

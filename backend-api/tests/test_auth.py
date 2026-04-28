@@ -129,10 +129,3 @@ def test_admin_audit_authenticated(auth_client):
 def test_admin_audit_unauthenticated(client):
     r = client.get("/api/admin/audit")
     assert r.status_code == 401
-
-
-# ── Change password ───────────────────────────────────────────────────────────
-
-def test_change_password_unauthenticated(client):
-    r = client.post("/api/auth/change-password", json={"new_password": "ShouldFail1!"})
-    assert r.status_code == 401

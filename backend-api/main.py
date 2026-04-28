@@ -480,7 +480,10 @@ async def update_file_version(filename: str, data: FileVersionRequest, user: dic
 @app.get("/api/jobs/{job_id}")
 async def get_job_status(job_id: str, user: dict = Depends(get_current_user)):
     job = await adb.get_job(job_id)
-    if job is None or job["username"] != user["username"]:
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    # Admins can poll any job (needed for cross-user reindex progress tracking)
+    if job["username"] != user["username"] and user.get("role") != "Admin":
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
@@ -1068,6 +1071,90 @@ async def vision_query(data: VisionRequest, user: dict = Depends(get_current_use
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+# ─── Admin: workspace listing + reindex ──────────────────────────────────────
+
+@app.get("/api/admin/workspaces")
+async def admin_list_workspaces(admin: dict = Depends(require_admin)):
+    """All workspaces across every user, with file counts — for the reindex picker."""
+    rows = await adb.get_all_users()
+    result = []
+    for row in rows:
+        username = row[1]
+        projects = await adb.get_all_projects(username)
+        for proj in projects:
+            pname = proj["name"] if isinstance(proj, dict) else proj
+            files = await run_in_threadpool(list_files_in_project, pname, username)
+            result.append({"username": username, "project": pname, "file_count": len(files)})
+    return {"workspaces": result}
+
+
+class ReindexRequest(BaseModel):
+    workspaces: list[dict]  # [{"username": "...", "project": "..."}]
+
+@app.post("/api/admin/reindex")
+async def admin_reindex(data: ReindexRequest, admin: dict = Depends(require_admin)):
+    """Drop and rebuild the vector index for each selected workspace. Returns job IDs for progress polling."""
+    all_job_ids: list[str] = []
+    for ws in data.workspaces:
+        username, project = ws["username"], ws["project"]
+        await run_in_threadpool(delete_project_index, username, project)
+        files = await run_in_threadpool(list_files_in_project, project, username)
+        for fname in files:
+            file_path = os.path.join(DATA_DIR, username, project, fname)
+            job_id = str(uuid.uuid4())
+            await adb.enqueue_job(job_id, file_path, username, project)
+            all_job_ids.append(job_id)
+    return {"status": "queued", "count": len(data.workspaces), "job_ids": all_job_ids}
+
+
+@app.get("/api/user/workspaces")
+async def user_list_workspaces(user: dict = Depends(get_current_user)):
+    """Current user's own workspaces with file counts — for the self-service reindex picker."""
+    username = user["username"]
+    projects = await adb.get_all_projects(username)
+    result = []
+    for proj in projects:
+        pname = proj["name"] if isinstance(proj, dict) else proj
+        files = await run_in_threadpool(list_files_in_project, pname, username)
+        result.append({"username": username, "project": pname, "file_count": len(files)})
+    return {"workspaces": result}
+
+
+@app.post("/api/user/reindex")
+async def user_reindex(data: ReindexRequest, user: dict = Depends(get_current_user)):
+    """Drop and rebuild the vector index for the current user's selected workspaces. Returns job IDs for progress polling."""
+    username = user["username"]
+    for ws in data.workspaces:
+        if ws.get("username") != username:
+            raise HTTPException(status_code=403, detail="Cannot reindex another user's workspace")
+
+    all_job_ids: list[str] = []
+    for ws in data.workspaces:
+        project = ws["project"]
+        await run_in_threadpool(delete_project_index, username, project)
+        files = await run_in_threadpool(list_files_in_project, project, username)
+        for fname in files:
+            file_path = os.path.join(DATA_DIR, username, project, fname)
+            job_id = str(uuid.uuid4())
+            await adb.enqueue_job(job_id, file_path, username, project)
+            all_job_ids.append(job_id)
+
+    return {"status": "queued", "count": len(data.workspaces), "job_ids": all_job_ids}
+
+
+# ─── Speech-to-text (local Whisper) ──────────────────────────────────────────
+
+@app.post("/api/speech")
+async def speech_to_text(audio: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Transcribe an audio blob using the local Whisper tiny.en model."""
+    from src.audio import transcribe_audio
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    text = await run_in_threadpool(transcribe_audio, data, audio.content_type or "audio/webm")
+    return {"text": text}
+
+
 if __name__ == "__main__":
     import uvicorn
     import subprocess
@@ -1333,14 +1420,15 @@ if __name__ == "__main__":
 
     # ── 2. Local env vars for the backend ────────────────────────────────────
 
-    os.environ.setdefault("DATABASE_URL",          "postgresql://sovereign:sovereign@localhost:5432/sovereign")
-    os.environ.setdefault("QDRANT_URL",            "http://localhost:6333")
-    os.environ.setdefault("NEO4J_URL",             "bolt://localhost:7687")
-    os.environ.setdefault("NEO4J_USERNAME",        "neo4j")
-    os.environ.setdefault("NEO4J_PASSWORD",        "sovereign2026")
-    os.environ.setdefault("SOVEREIGN_DATA_DIR",    str(BACKEND_DIR / "data"))
-    os.environ.setdefault("SOVEREIGN_LOG_DIR",     str(BACKEND_DIR / "logs"))
-    os.environ.setdefault("SOVEREIGN_STORAGE_DIR", str(BACKEND_DIR / "storage"))
+    os.environ.setdefault("DATABASE_URL",            "postgresql://sovereign:sovereign@localhost:5432/sovereign")
+    os.environ.setdefault("QDRANT_URL",              "http://localhost:6333")
+    os.environ.setdefault("NEO4J_URL",               "bolt://localhost:7687")
+    os.environ.setdefault("NEO4J_USERNAME",          "neo4j")
+    os.environ.setdefault("NEO4J_PASSWORD",          "sovereign2026")
+    os.environ.setdefault("SOVEREIGN_GRAPH_ENABLED", "1")
+    os.environ.setdefault("SOVEREIGN_DATA_DIR",      str(BACKEND_DIR / "data"))
+    os.environ.setdefault("SOVEREIGN_LOG_DIR",       str(BACKEND_DIR / "logs"))
+    os.environ.setdefault("SOVEREIGN_STORAGE_DIR",   str(BACKEND_DIR / "storage"))
 
     # ── 3. Frontend ───────────────────────────────────────────────────────────
 

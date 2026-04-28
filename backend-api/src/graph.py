@@ -69,6 +69,7 @@ def index_nodes_in_graph(nodes: list, username: str, project: str) -> None:
     if gs is None:
         return
     try:
+        import asyncio
         from llama_index.core import PropertyGraphIndex, StorageContext, Settings
         from llama_index.core.indices.property_graph import SimpleLLMPathExtractor
 
@@ -79,16 +80,27 @@ def index_nodes_in_graph(nodes: list, username: str, project: str) -> None:
 
         extractor = SimpleLLMPathExtractor(
             llm=Settings.llm,
-            max_paths_per_chunk=5,   # keep LLM calls short
+            max_paths_per_chunk=5,
             num_workers=1,
         )
         sc = StorageContext.from_defaults(property_graph_store=gs)
-        PropertyGraphIndex(
-            nodes=nodes,
-            kg_extractors=[extractor],
-            storage_context=sc,
-            show_progress=False,
-        )
+
+        # The worker runs in a plain thread with no event loop.
+        # llama_index's graph indexing requires one, so create a fresh loop
+        # for this call and tear it down when done.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            PropertyGraphIndex(
+                nodes=nodes,
+                kg_extractors=[extractor],
+                storage_context=sc,
+                show_progress=False,
+            )
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
         print(f"✅ Graph: {len(nodes)} nodes extracted → Neo4j ({username}/{project})")
     except Exception as e:
         print(f"⚠️  Graph indexing skipped: {e}")

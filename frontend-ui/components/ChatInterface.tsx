@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, BookOpen, Shield, Lock, ChevronRight, Cpu, Layers, Zap, GitCompare, ChevronDown, ChevronUp } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, Upload, Shield, ChevronRight, Layers, Zap, GitCompare, ChevronDown, ChevronUp, Mic, MicOff } from "lucide-react";
 import DiffModal from "./DiffModal";
 import { getThreadHistory } from "@/app/actions";
 import ReactMarkdown from "react-markdown";
@@ -38,6 +38,9 @@ interface ChatInterfaceProps {
   onNewThread: (threadId: string) => void;
   onRenameProject?: (oldName: string, newName: string) => void;
   onRenameThread?: (oldId: string, newId: string) => void;
+  onOpenDocs?: () => void;
+  onOpenQueryLog?: () => void;
+  onOpenSecurity?: () => void;
 }
 
 
@@ -458,6 +461,79 @@ function AttachButton({ onClick, disabled }: { onClick: () => void; disabled: bo
   );
 }
 
+function MicButton({ onTranscript, disabled }: {
+  onTranscript: (text: string) => void;
+  disabled: boolean;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+
+  async function toggle() {
+    if (transcribing) return;
+
+    if (recording) {
+      mediaRef.current?.stop();
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      chunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mediaRef.current = mr;
+
+      mr.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setRecording(false);
+        setTranscribing(true);
+        try {
+          const blob = new Blob(chunksRef.current, { type: mr.mimeType });
+          const fd = new FormData();
+          fd.append("audio", blob, "recording" + (mr.mimeType.includes("ogg") ? ".ogg" : ".webm"));
+          const res = await fetch("/api/speech", { method: "POST", body: fd });
+          if (res.ok) {
+            const { text } = await res.json();
+            if (text) onTranscript(text);
+          }
+        } catch {
+          // transcription failed silently
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      mr.start();
+      setRecording(true);
+    } catch {
+      // microphone permission denied — ignore
+    }
+  }
+
+  const active = recording || transcribing;
+  return (
+    <button
+      onClick={toggle}
+      disabled={disabled || transcribing}
+      title={recording ? "Stop recording" : transcribing ? "Transcribing…" : "Voice input"}
+      style={{
+        width: "28px", height: "28px", borderRadius: "8px", border: "none",
+        cursor: disabled || transcribing ? "not-allowed" : "pointer", flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: recording ? "rgba(239,68,68,0.15)" : "transparent",
+        color: recording ? "#ef4444" : transcribing ? "var(--amber)" : "var(--t3)",
+        transition: "all 0.15s ease",
+        animation: recording ? "pulse 1.2s ease-in-out infinite" : "none",
+      }}
+    >
+      {active ? <MicOff size={15} /> : <Mic size={15} />}
+    </button>
+  );
+}
+
 // ─── InlineEdit ───────────────────────────────────────────────────────────────
 
 function InlineEdit({
@@ -544,7 +620,7 @@ async function waitForJob(jobId: string, signal: AbortSignal): Promise<void> {
   }
 }
 
-export default function ChatInterface({ activeProject, activeThread, username, onNewThread, onRenameProject, onRenameThread }: ChatInterfaceProps) {
+export default function ChatInterface({ activeProject, activeThread, username, onNewThread, onRenameProject, onRenameThread, onOpenDocs, onOpenQueryLog, onOpenSecurity }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [indexingFile, setIndexingFile] = useState<string | null>(null);
@@ -871,36 +947,36 @@ export default function ChatInterface({ activeProject, activeThread, username, o
             </>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          {/* Compare button */}
-          {activeProject && (
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          {([
+            { icon: Upload,     label: "DOCUMENTS", iconColor: "var(--cyan)",  action: onOpenDocs },
+            { icon: GitCompare, label: "COMPARE",   iconColor: "var(--t2)",    action: () => activeProject && setShowDiff(true) },
+            { icon: Layers,     label: "QUERY LOG", iconColor: "var(--green)", action: onOpenQueryLog },
+            { icon: Shield,     label: "SECURITY",  iconColor: "#818cf8",      action: onOpenSecurity },
+          ] as const).map(({ icon: Icon, label, iconColor, action }) => (
             <button
-              onClick={() => setShowDiff(true)}
-              title="Compare two documents"
+              key={label}
+              onClick={action}
               style={{
                 display: "flex", alignItems: "center", gap: "5px",
-                padding: "4px 9px", borderRadius: "6px", border: "1px solid var(--b2)",
-                background: "var(--raised)", color: "var(--t3)", fontSize: "9px",
+                padding: "4px 10px", borderRadius: "6px",
+                border: "1px solid var(--b2)",
+                background: "var(--raised)",
+                color: "var(--t1)", fontSize: "9px",
                 cursor: "pointer", transition: "all 0.15s ease",
               }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = "var(--hover-bg)";
+                e.currentTarget.style.borderColor = "var(--b1)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = "var(--raised)";
+                e.currentTarget.style.borderColor = "var(--b2)";
+              }}
             >
-              <GitCompare size={10} />
-              <span className="font-mono" style={{ letterSpacing: "0.08em" }}>COMPARE</span>
+              <Icon size={10} style={{ color: iconColor, flexShrink: 0 }} />
+              <span className="font-mono" style={{ letterSpacing: "0.08em" }}>{label}</span>
             </button>
-          )}
-          {[
-            { icon: Lock, label: "ENCRYPTED", color: "var(--green)", bg: "var(--green-10)" },
-            { icon: Cpu, label: "LOCAL", color: "var(--cyan)", bg: "var(--cyan-10)" },
-            { icon: Shield, label: "SOVEREIGN", color: "var(--amber)", bg: "var(--amber-5)" },
-          ].map(({ icon: Icon, label, color, bg }) => (
-            <div key={label} style={{
-              display: "flex", alignItems: "center", gap: "5px",
-              padding: "4px 9px", borderRadius: "6px",
-              background: bg, border: `1px solid ${color}22`,
-            }}>
-              <Icon size={9} style={{ color }} />
-              <span className="font-mono" style={{ fontSize: "9px", color, letterSpacing: "0.08em" }}>{label}</span>
-            </div>
           ))}
         </div>
       </header>
@@ -986,6 +1062,12 @@ export default function ChatInterface({ activeProject, activeThread, username, o
             <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", padding: "11px 12px 10px" }}>
               {/* Attach button */}
               <AttachButton onClick={handleAttachClick} disabled={isLoading} />
+
+              {/* Mic button */}
+              <MicButton
+                disabled={isLoading}
+                onTranscript={text => setInput(prev => prev ? prev + " " + text : text)}
+              />
 
               {/* Agent mode toggle */}
               <button

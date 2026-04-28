@@ -23,6 +23,7 @@ interface ToastContextValue {
   info: (title: string, description?: string) => string;
   warning: (title: string, description?: string) => string;
   dismiss: (id: string) => void;
+  trackInBackground: (jobIds: string[], title: string, description?: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -40,6 +41,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return id;
   }, []);
 
+  const trackInBackground = useCallback((jobIds: string[], title: string, description?: string) => {
+    if (!jobIds.length) return;
+    const ids = [...jobIds];
+    const interval = setInterval(async () => {
+      try {
+        const statuses = await Promise.all(
+          ids.map(id => fetch(`/api/jobs/${id}`).then(r => r.ok ? r.json() : null))
+        );
+        const done = statuses.filter(j => j && (j.status === 'done' || j.status === 'failed')).length;
+        if (done === ids.length) {
+          clearInterval(interval);
+          show({ type: 'success', title, description, duration: 6000 });
+        }
+      } catch { /* ignore transient network errors */ }
+    }, 2000);
+  }, [show]);
+
   const value: ToastContextValue = {
     show,
     success: (title, description) => show({ type: 'success', title, description }),
@@ -47,6 +65,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     info:    (title, description) => show({ type: 'info',    title, description }),
     warning: (title, description) => show({ type: 'warning', title, description }),
     dismiss,
+    trackInBackground,
   };
 
   return (

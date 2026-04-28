@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search, MessageSquare, Network, ChevronRight, Folder, Hash, User,
-  Settings, LogOut, Keyboard, Sun, Moon, FileText, Bell, Activity,
+  Settings, LogOut, Keyboard, Sun, Moon, Bell, Activity, DatabaseZap,
 } from 'lucide-react';
 import { useCommand } from '@/contexts/CommandContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -18,12 +18,13 @@ interface TopBarProps {
   onViewModeChange: (m: 'chat' | 'graph') => void;
   onOpenDocs: () => void;
   onOpenShortcuts: () => void;
+  onReindex?: () => void;
   pendingNotifications?: number;
 }
 
 export default function TopBar({
   activeProject, activeThread, viewMode, onViewModeChange,
-  onOpenDocs, onOpenShortcuts, pendingNotifications = 0,
+  onOpenDocs, onOpenShortcuts, onReindex, pendingNotifications = 0,
 }: TopBarProps) {
   const router = useRouter();
   const { open: openCmd } = useCommand();
@@ -72,22 +73,22 @@ export default function TopBar({
       {/* ── Breadcrumb ── */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: '6px',
-        fontSize: '13px', color: 'var(--t2)', minWidth: 0, flexShrink: 1,
+        fontSize: '13px', color: 'var(--t1)', minWidth: 0, flexShrink: 1,
       }}>
         {activeProject ? (
           <>
-            <Folder size={13} style={{ color: 'var(--t3)', flexShrink: 0 }} />
+            <Folder size={13} style={{ color: 'var(--t2)', flexShrink: 0 }} />
             <span style={{
-              color: 'var(--t1)', fontWeight: 500,
+              color: 'var(--t1)', fontWeight: 600,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               maxWidth: '200px',
             }}>
               {activeProject}
             </span>
-            <ChevronRight size={12} style={{ color: 'var(--t3)', flexShrink: 0 }} />
-            <Hash size={12} style={{ color: 'var(--t3)', flexShrink: 0 }} />
+            <ChevronRight size={12} style={{ color: 'var(--t2)', flexShrink: 0 }} />
+            <Hash size={12} style={{ color: 'var(--t2)', flexShrink: 0 }} />
             <span style={{
-              color: 'var(--t2)',
+              color: 'var(--t1)',
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               maxWidth: '180px',
             }}>
@@ -95,7 +96,7 @@ export default function TopBar({
             </span>
           </>
         ) : (
-          <span style={{ color: 'var(--t3)', fontStyle: 'italic' }}>
+          <span style={{ color: 'var(--t2)', fontStyle: 'italic' }}>
             No workspace selected
           </span>
         )}
@@ -159,13 +160,31 @@ export default function TopBar({
         </span>
       </button>
 
-      {/* ── Documents button ── */}
-      <IconButton
-        title="Documents"
-        onClick={onOpenDocs}
-      >
-        <FileText size={14} />
-      </IconButton>
+      {/* ── Reindex button ── */}
+      {session && onReindex && (
+        <button
+          onClick={onReindex}
+          title="Reindex Documents"
+          style={{
+            display: 'flex', alignItems: 'center', gap: '5px',
+            padding: '5px 11px', borderRadius: '7px', cursor: 'pointer',
+            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.28)',
+            color: 'var(--amber)', fontSize: '11.5px', fontWeight: 600,
+            letterSpacing: '0.01em', transition: 'all 0.15s ease', flexShrink: 0,
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'rgba(245,158,11,0.15)';
+            e.currentTarget.style.borderColor = 'rgba(245,158,11,0.50)';
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'rgba(245,158,11,0.08)';
+            e.currentTarget.style.borderColor = 'rgba(245,158,11,0.28)';
+          }}
+        >
+          <DatabaseZap size={12} />
+          Reindex
+        </button>
+      )}
 
       {/* ── Notifications ── */}
       <IconButton

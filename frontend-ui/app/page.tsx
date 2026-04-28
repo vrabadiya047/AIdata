@@ -9,6 +9,9 @@ import KnowledgeGraph from '@/components/KnowledgeGraph';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import TopBar from '@/components/TopBar';
 import ShortcutsOverlay from '@/components/ShortcutsOverlay';
+import ReindexModal from '@/components/ReindexModal';
+import QueryLogPanel from '@/components/QueryLogPanel';
+import SecurityPanel from '@/components/SecurityPanel';
 import { useSession } from '@/contexts/SessionContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -29,6 +32,9 @@ export default function Home() {
   const [activeThread, setActiveThread] = useState('General');
   const [showDocs, setShowDocs] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showReindex, setShowReindex] = useState(false);
+  const [showQueryLog, setShowQueryLog] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wsRefreshKey, setWsRefreshKey] = useState(0);
   const [viewMode, setViewMode] = useState<'chat' | 'graph'>('chat');
@@ -220,8 +226,8 @@ export default function Home() {
             activeProject={activeProject}
             activeThread={activeThread}
             wsRefreshKey={wsRefreshKey}
-            onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); }}
-            onSelectThread={setActiveThread}
+            onSelectProject={(p) => { setActiveProject(p); setActiveThread('General'); setViewMode('chat'); }}
+            onSelectThread={(t) => { setActiveThread(t); setViewMode('chat'); }}
             onOpenDocs={() => setShowDocs(true)}
           />
         </ErrorBoundary>
@@ -244,6 +250,7 @@ export default function Home() {
           onViewModeChange={setViewMode}
           onOpenDocs={() => setShowDocs(true)}
           onOpenShortcuts={() => setShowShortcuts(true)}
+          onReindex={() => setShowReindex(true)}
         />
 
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -261,6 +268,9 @@ export default function Home() {
                 onRenameThread={(_oldId, newId) => {
                   setActiveThread(newId);
                 }}
+                onOpenDocs={() => setShowDocs(true)}
+                onOpenQueryLog={() => setShowQueryLog(true)}
+                onOpenSecurity={() => setShowSecurity(true)}
               />
             </ErrorBoundary>
           ) : (
@@ -285,6 +295,10 @@ export default function Home() {
         onClose={() => setShowShortcuts(false)}
         isMac={isMac}
       />
+
+      {showReindex && <ReindexModal onClose={() => setShowReindex(false)} isAdmin={session?.role === 'Admin'} />}
+      {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
+      {showSecurity && <SecurityPanel onClose={() => setShowSecurity(false)} />}
     </div>
   );
 }

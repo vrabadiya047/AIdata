@@ -188,6 +188,74 @@ class _FilteredGraphRetriever:
         ]
 
 
+# ── Graph data export (used by /api/graph endpoint) ──────────────────────────
+
+def get_project_graph(username: str, project: str) -> dict:
+    """Return all nodes and edges for a project's knowledge graph.
+
+    Returns {"enabled": bool, "nodes": [...], "edges": [...]}
+    """
+    if not _ENABLED:
+        return {"enabled": False, "nodes": [], "edges": []}
+    gs = _get_store()
+    if gs is None:
+        return {"enabled": False, "nodes": [], "edges": []}
+    try:
+        driver = getattr(gs, "_driver", None) or getattr(gs, "driver", None)
+        if driver is None:
+            return {"enabled": True, "nodes": [], "edges": [], "error": "Neo4j driver not accessible"}
+
+        records, _, _ = driver.execute_query(
+            """
+            MATCH (n)-[r]->(m)
+            WHERE (n.project_name = $project OR $project = '')
+              AND n.id IS NOT NULL AND m.id IS NOT NULL
+              AND n <> m
+            RETURN
+              n.id                           AS sid,
+              coalesce(n.name, n.id)         AS sname,
+              coalesce(n.label, 'Entity')    AS stype,
+              type(r)                        AS relation,
+              m.id                           AS tid,
+              coalesce(m.name, m.id)         AS tname,
+              coalesce(m.label, 'Entity')    AS ttype
+            LIMIT 500
+            """,
+            project=project,
+        )
+
+        nodes_map: dict = {}
+        edges: list = []
+
+        for rec in records:
+            sid, tid = rec["sid"], rec["tid"]
+            if not sid or not tid or sid == tid:
+                continue
+            if sid not in nodes_map:
+                nodes_map[sid] = {
+                    "id": sid,
+                    "name": rec["sname"] or sid,
+                    "type": rec["stype"] or "Entity",
+                    "connections": 0,
+                }
+            if tid not in nodes_map:
+                nodes_map[tid] = {
+                    "id": tid,
+                    "name": rec["tname"] or tid,
+                    "type": rec["ttype"] or "Entity",
+                    "connections": 0,
+                }
+            nodes_map[sid]["connections"] += 1
+            nodes_map[tid]["connections"] += 1
+            rel = (rec["relation"] or "RELATED_TO").replace("_", " ").title()
+            edges.append({"source": sid, "target": tid, "relation": rel})
+
+        return {"enabled": True, "nodes": list(nodes_map.values()), "edges": edges}
+    except Exception as exc:
+        print(f"⚠️  Graph export failed: {exc}")
+        return {"enabled": True, "nodes": [], "edges": [], "error": str(exc)}
+
+
 # ── Hybrid retriever (used by engine.get_query_components) ───────────────────
 
 class HybridGraphVectorRetriever:

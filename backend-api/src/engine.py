@@ -20,15 +20,27 @@ from llama_index.postprocessor.sbert_rerank import SentenceTransformerRerank
 from llama_index.vector_stores.qdrant import QdrantVectorStore as _QdrantVectorStore
 from pydantic import BaseModel as _PydanticBaseModel
 import qdrant_client as _qc_module
+from importlib.metadata import version as _pkg_version
+
+def _parse_semver(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.split(".")[:2])
+    except Exception:
+        return (0, 0)
+
+try:
+    _QDRANT_STORE_VER = _parse_semver(_pkg_version("llama-index-vector-stores-qdrant"))
+except Exception:
+    _QDRANT_STORE_VER = (0, 1)
+
+# 0.1.x assigns private attrs BEFORE super().__init__() — Pydantic v2 wipes them.
+# 0.4.0+ fixed the ordering, so no workaround needed there.
+_LEGACY_QDRANT_STORE = _QDRANT_STORE_VER < (0, 4)
 
 
-# llama-index-vector-stores-qdrant 0.1.4 (only version installable on Python 3.14)
-# was built for llama-index-core < 0.11, but 0.14.x uses Pydantic v2 strictly.
-# Bug: the original __init__ assigns private attrs BEFORE calling super().__init__(),
-# so Pydantic v2's __pydantic_private__ re-initialization (inside super().__init__)
-# wipes those values. Fix: call Pydantic's BaseModel.__init__ first to set up
-# __pydantic_private__, then assign private attrs safely afterward.
 class QdrantVectorStore(_QdrantVectorStore):
+    # `path` exists in 0.1.4 but not in 0.4.0+. Declaring it here with a default
+    # keeps the subclass valid on both versions (Pydantic just uses the default on 0.4.0+).
     path: Optional[str] = None
 
     def __init__(
@@ -52,38 +64,53 @@ class QdrantVectorStore(_QdrantVectorStore):
         ):
             raise ValueError("Must provide either a QdrantClient instance or a url and api_key.")
 
-        # Step 1: let Pydantic set up __pydantic_private__ by calling BaseModel.__init__.
-        # We skip _QdrantVectorStore.__init__ entirely because it sets private attrs
-        # before super().__init__(), which Pydantic v2 then wipes.
-        _PydanticBaseModel.__init__(
-            self,
-            collection_name=collection_name,
-            path=None,
-            url=url,
-            api_key=api_key,
-            batch_size=batch_size,
-            parallel=parallel,
-            max_retries=max_retries,
-            client_kwargs=client_kwargs or {},
-            enable_hybrid=enable_hybrid,
-        )
-
-        # Step 2: now __pydantic_private__ exists, assign private attrs safely.
-        if client is None and aclient is None:
-            kw = client_kwargs or {}
-            self._client = _qc_module.QdrantClient(url=url, api_key=api_key, **kw)
-            self._aclient = _qc_module.AsyncQdrantClient(url=url, api_key=api_key, **kw)
+        if _LEGACY_QDRANT_STORE:
+            # 0.1.4: sets private attrs BEFORE super().__init__() → Pydantic v2 wipes them.
+            # Fix: call Pydantic's BaseModel.__init__ first to set up __pydantic_private__,
+            # then assign private attrs safely afterward.
+            _PydanticBaseModel.__init__(
+                self,
+                collection_name=collection_name,
+                path=None,
+                url=url,
+                api_key=api_key,
+                batch_size=batch_size,
+                parallel=parallel,
+                max_retries=max_retries,
+                client_kwargs=client_kwargs or {},
+                enable_hybrid=enable_hybrid,
+            )
+            if client is None and aclient is None:
+                kw = client_kwargs or {}
+                self._client = _qc_module.QdrantClient(url=url, api_key=api_key, **kw)
+                self._aclient = _qc_module.AsyncQdrantClient(url=url, api_key=api_key, **kw)
+            else:
+                self._client = client
+                self._aclient = aclient
+            self._collection_initialized = (
+                self._collection_exists(collection_name) if self._client is not None else False
+            )
         else:
-            self._client = client
-            self._aclient = aclient
-
-        self._collection_initialized = (
-            self._collection_exists(collection_name) if self._client is not None else False
-        )
+            # 0.4.0+: super().__init__() is called first → Pydantic v2 safe.
+            # Pass common kwargs; extra fields in newer versions get their defaults.
+            super().__init__(
+                collection_name=collection_name,
+                client=client,
+                aclient=aclient,
+                url=url,
+                api_key=api_key,
+                batch_size=batch_size,
+                parallel=parallel,
+                max_retries=max_retries,
+                client_kwargs=client_kwargs,
+                enable_hybrid=enable_hybrid,
+            )
 
     def query(self, query: Any, **kwargs: Any) -> Any:
-        # qdrant-client >= 1.14 removed `client.search()`; replaced by `query_points()`.
-        # The parent class (0.1.4) still calls the removed method, so we override it here.
+        if not _LEGACY_QDRANT_STORE:
+            # 0.4.0+ parent already uses query_points() correctly.
+            return super().query(query, **kwargs)
+        # 0.1.4 parent calls the removed client.search(); use query_points() instead.
         query_embedding = cast(List[float], query.query_embedding)
         qdrant_filters = kwargs.get("qdrant_filters")
         query_filter = (
@@ -148,6 +175,126 @@ SOVEREIGN_PROMPT = PromptTemplate(
     "Question: {query_str}\n"
     "Answer:"
 )
+
+# ── Self-RAG (Self-Correcting RAG) ───────────────────────────────────────────
+
+_STOP_WORDS = frozenset({
+    "a","an","the","is","are","was","were","be","been","being","have","has",
+    "had","do","does","did","will","would","could","should","may","might",
+    "to","of","in","on","at","for","with","by","from","that","this","what",
+    "which","who","how","when","where","why","and","or","not","no","i","me",
+    "my","we","our","you","your","it","its","tell","about","give","explain",
+    "describe","find","show","list","get","provide","any","some","all","much",
+    "many","please","need","want","can","just","then","than","use","used",
+})
+
+CRITIC_MODEL     = os.environ.get("SOVEREIGN_CRITIC_MODEL", "llama3.2:1b")
+SELF_RAG_RETRIES = int(os.environ.get("SOVEREIGN_SELF_RAG_RETRIES", "2"))
+
+_critic_llm: Any = None
+
+
+def _get_critic_llm():
+    global _critic_llm
+    if _critic_llm is None:
+        try:
+            from llama_index.llms.ollama import Ollama
+            _critic_llm = Ollama(model=CRITIC_MODEL, request_timeout=15.0, context_window=512)
+        except Exception as e:
+            print(f"⚠️  Critic LLM init failed, falling back to main LLM: {e}")
+            _critic_llm = Settings.llm
+    return _critic_llm
+
+
+def _grade_context(query: str, context: str) -> bool:
+    """Critic model grades whether context is sufficient to answer the query. Returns True=YES.
+
+    Fail-open: any response that isn't a clear 'NO' is treated as YES, so a stuck
+    or unavailable critic never triggers infinite retries.
+    """
+    prompt = (
+        "Grade whether the context contains enough information to answer the question.\n"
+        f"Question: {query}\n"
+        f"Context: {context[:1000]}\n"
+        "Reply with only YES or NO."
+    )
+    try:
+        result = _get_critic_llm().complete(prompt)
+        # Only retry on an explicit "NO" — anything ambiguous passes.
+        return not str(result.text).strip().upper().startswith("NO")
+    except Exception as e:
+        print(f"⚠️  Context grading error: {e}")
+        return True  # critic unavailable → assume context is good
+
+
+def _extract_keywords(query: str) -> str:
+    """Strip stop words and return content words for BM25-style keyword search."""
+    words = re.findall(r'\b\w+\b', query.lower())
+    kw = [w for w in words if w not in _STOP_WORDS and len(w) > 2]
+    return " ".join(kw) if kw else query
+
+
+def self_rag_retrieve(retriever, postprocessors: list, query: str) -> tuple[list, list[dict]]:
+    """
+    Self-correcting RAG retrieval loop.
+
+    1. Retrieve chunks with the current query.
+    2. Ask the critic model: does this context answer the question? (YES/NO)
+    3. If NO and retries remain: rewrite the query using keyword extraction, retry.
+    4. Return (best_nodes, events) where events are dicts for SSE status emission.
+
+    Event shapes:
+      {"type": "grading",  "message": "..."}
+      {"type": "retry",    "message": "...", "attempt": N}
+    """
+    from llama_index.core.schema import QueryBundle
+
+    events: list[dict] = []
+    current_query = query
+    best_nodes: list = []
+
+    for attempt in range(SELF_RAG_RETRIES + 1):
+        try:
+            nodes = retriever.retrieve(current_query)
+            qb = QueryBundle(current_query)
+            for pp in postprocessors:
+                nodes = pp.postprocess_nodes(nodes, query_bundle=qb)
+        except Exception as e:
+            print(f"⚠️  Self-RAG retrieve attempt {attempt}: {e}")
+            nodes = []
+
+        if nodes:
+            best_nodes = nodes
+
+        if attempt >= SELF_RAG_RETRIES:
+            break
+
+        if not nodes:
+            events.append({
+                "type": "retry", "attempt": attempt + 1,
+                "message": "No documents found — refining search keywords…",
+            })
+            current_query = _extract_keywords(query)
+            continue
+
+        # Grade the quality of retrieved context (silent on pass — no event spam)
+        context_text = "\n\n".join(str(n.node.get_content()) for n in nodes[:5])
+        passed = _grade_context(query, context_text)
+
+        if passed:
+            break
+
+        # Only emit events when a retry is actually needed
+        new_q = _extract_keywords(query) if attempt == 0 else query
+        events.append({"type": "grading", "message": "Verifying context relevance…"})
+        events.append({
+            "type": "retry", "attempt": attempt + 1,
+            "message": "Context may be insufficient — expanding search…",
+        })
+        current_query = new_q
+
+    return best_nodes, events
+
 
 # ── Qdrant singleton ──────────────────────────────────────────────────────────
 _qdrant: QdrantClient | None = None

@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND = "http://127.0.0.1:8000";
 
-export async function PUT(req: NextRequest, { params }: { params: { filename: string } }) {
+export async function PUT(req: NextRequest, ctx: { params: Promise<{ filename: string }> }) {
+  const { filename } = await ctx.params;
   const cookie = req.cookies.get("sovereign_session")?.value ?? "";
   const body = await req.json();
 
   const res = await fetch(
-    `${BACKEND}/api/files/${encodeURIComponent(params.filename)}/version`,
+    `${BACKEND}/api/files/${encodeURIComponent(filename)}/version`,
     {
       method: "PUT",
       headers: {

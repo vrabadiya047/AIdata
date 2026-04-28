@@ -77,21 +77,21 @@ class TestSourceExtractionViaEndpoint:
         r = self._post(auth_client, resp)
         assert r.status_code == 200
         events = _sse_events(r.content)
-        # First event must be sources
         assert "sources" in events[0]
         src = events[0]["sources"][0]
         assert src["file"] == "report.pdf"
-        assert src["page"] == 5
+        assert 5 in src["pages"]
         assert src["score"] == 0.95
         assert "answer is 42" in src["excerpt"]
 
     def test_page_label_none_when_not_present(self, auth_client):
+        """No page label → empty pages list (not null)."""
         sn = _make_source_node("notes.txt", page_label=None, text="Some text.", score=0.7)
         resp = _make_engine_response([sn])
         r = self._post(auth_client, resp)
         events = _sse_events(r.content)
         src = events[0]["sources"][0]
-        assert src["page"] is None
+        assert src["pages"] == []
 
     def test_excerpt_truncated_to_280_chars(self, auth_client):
         long_text = "A" * 500
@@ -103,26 +103,31 @@ class TestSourceExtractionViaEndpoint:
         assert len(src["excerpt"]) <= 280
 
     def test_deduplication_by_file_and_page(self, auth_client):
-        """Two nodes from same file+page → only one citation."""
+        """Two nodes from same file+page → one citation with page deduplicated."""
         sn1 = _make_source_node("doc.pdf", page_label="3", text="First chunk.", score=0.9)
         sn2 = _make_source_node("doc.pdf", page_label="3", text="Second chunk.", score=0.85)
         resp = _make_engine_response([sn1, sn2])
         r = self._post(auth_client, resp)
         events = _sse_events(r.content)
-        assert len(events[0]["sources"]) == 1
+        sources = events[0]["sources"]
+        assert len(sources) == 1
+        assert sources[0]["pages"] == [3]
 
     def test_same_file_different_pages_both_emitted(self, auth_client):
-        """Two nodes from same file but different pages → two citations."""
+        """Two nodes from same file but different pages → one grouped citation with both pages."""
         sn1 = _make_source_node("manual.pdf", page_label="2", text="Chapter intro.", score=0.9)
         sn2 = _make_source_node("manual.pdf", page_label="7", text="Later section.", score=0.8)
         resp = _make_engine_response([sn1, sn2])
         r = self._post(auth_client, resp)
         events = _sse_events(r.content)
-        pages = [s["page"] for s in events[0]["sources"]]
+        sources = events[0]["sources"]
+        assert len(sources) == 1          # grouped into one chip
+        pages = sources[0]["pages"]
         assert 2 in pages
         assert 7 in pages
 
     def test_multiple_files_cited(self, auth_client):
+        """Two different files → two separate source entries."""
         sn1 = _make_source_node("alpha.pdf", page_label="1", text="Alpha content.", score=0.9)
         sn2 = _make_source_node("beta.txt",  page_label=None,  text="Beta content.",  score=0.7)
         resp = _make_engine_response([sn1, sn2])
@@ -167,7 +172,7 @@ class TestMetadataExtraction:
     """Test the file_name / page_label fallback logic in isolation."""
 
     def _extract(self, meta: dict, text="", score=0.9):
-        """Reproduce the extraction logic from main.py generate_tokens()."""
+        """Reproduce the single-node field extraction logic from _extract_sources."""
         fname = (
             meta.get("file_name") or
             meta.get("filename") or
@@ -179,7 +184,8 @@ class TestMetadataExtraction:
             page = int(raw_page) if raw_page is not None else None
         except (ValueError, TypeError):
             page = None
-        return {"file": fname, "page": page, "excerpt": text[:280].strip(), "score": round(score, 3)}
+        pages = [page] if page is not None else []
+        return {"file": fname, "pages": pages, "excerpt": text[:280].strip(), "score": round(score, 3)}
 
     def test_uses_file_name_field(self):
         r = self._extract({"file_name": "report.pdf"})
@@ -199,20 +205,20 @@ class TestMetadataExtraction:
 
     def test_page_label_as_int(self):
         r = self._extract({"file_name": "f.pdf", "page_label": "12"})
-        assert r["page"] == 12
+        assert 12 in r["pages"]
 
     def test_page_label_integer_passthrough(self):
         r = self._extract({"file_name": "f.pdf", "page_label": 7})
-        assert r["page"] == 7
+        assert 7 in r["pages"]
 
     def test_page_key_as_fallback(self):
         r = self._extract({"file_name": "f.pdf", "page": "3"})
-        assert r["page"] == 3
+        assert 3 in r["pages"]
 
-    def test_invalid_page_label_yields_none(self):
+    def test_invalid_page_label_yields_empty_list(self):
         r = self._extract({"file_name": "f.pdf", "page_label": "N/A"})
-        assert r["page"] is None
+        assert r["pages"] == []
 
-    def test_missing_page_yields_none(self):
+    def test_missing_page_yields_empty_list(self):
         r = self._extract({"file_name": "f.pdf"})
-        assert r["page"] is None
+        assert r["pages"] == []

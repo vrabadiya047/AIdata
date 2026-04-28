@@ -58,7 +58,11 @@ def test_diff_unauthenticated(client):
 
 def test_diff_missing_file_a_returns_404(auth_client):
     add_custom_project("DiffMissA", "admin")
-    with patch("main.get_file_chunks", side_effect=[[], ["text of B"]]), \
+
+    def _chunks(_owner, _proj, filename, **kw):
+        return [] if filename == "ghost.pdf" else ["text of B"]
+
+    with patch("main.get_file_chunks", side_effect=_chunks), \
          patch("main.adb.get_project_owner", new_callable=AsyncMock, return_value="admin"):
         r = auth_client.post("/api/diff", json={
             "file_a": "ghost.pdf", "file_b": "real.pdf", "project": "DiffMissA",
@@ -69,7 +73,11 @@ def test_diff_missing_file_a_returns_404(auth_client):
 
 def test_diff_missing_file_b_returns_404(auth_client):
     add_custom_project("DiffMissB", "admin")
-    with patch("main.get_file_chunks", side_effect=[["text of A"], []]), \
+
+    def _chunks(_owner, _proj, filename, **kw):
+        return [] if filename == "ghost.pdf" else ["text of A"]
+
+    with patch("main.get_file_chunks", side_effect=_chunks), \
          patch("main.adb.get_project_owner", new_callable=AsyncMock, return_value="admin"):
         r = auth_client.post("/api/diff", json={
             "file_a": "real.pdf", "file_b": "ghost.pdf", "project": "DiffMissB",

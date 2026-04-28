@@ -34,8 +34,6 @@ services:
       - "7687:7687"   # bolt protocol
     environment:
       NEO4J_AUTH: neo4j/sovereign2026
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
     volumes:
       - neo4j_data:/data
     healthcheck:

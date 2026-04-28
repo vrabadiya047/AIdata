@@ -233,41 +233,59 @@ body {
 .pulse-amber { animation: amber-pulse 2s ease-in-out infinite; }
 .pulse-green { animation: green-pulse 2.5s ease-in-out infinite; }
 
-/* ─── Noise grain overlay ───────────────────────── */
-.grain-overlay::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 200px;
-}
+/* ─── Noise grain overlay (DEPRECATED — kept as no-op for compatibility) ─── */
+.grain-overlay::before { content: none; }
 
-[data-theme="light"] .grain-overlay::before { opacity: 0.012; }
-
-/* ─── Dot grid ───────────────────────────────────── */
+/* ─── Dot grid (subtle, enterprise) ──────────────── */
 .dot-grid {
-  background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background-image: radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px);
+  background-size: 28px 28px;
 }
 
 [data-theme="light"] .dot-grid {
-  background-image: radial-gradient(rgba(0,0,0,0.045) 1px, transparent 1px);
+  background-image: radial-gradient(rgba(0,0,0,0.030) 1px, transparent 1px);
 }
 
-/* ─── Scan line ─────────────────────────────────── */
-.scan-line::after {
-  content: '';
-  position: absolute;
-  inset-inline: 0;
-  height: 80px;
-  background: linear-gradient(to bottom, transparent, rgba(245,158,11,0.03), transparent);
-  animation: scan 6s linear infinite;
-  pointer-events: none;
+/* ─── Scan line (DEPRECATED — kept as no-op) ────── */
+.scan-line::after { content: none; }
+
+/* ─── Surface elevations (used by cards/panels) ─── */
+.elev-1 { background: var(--surface); border: 1px solid var(--b1); }
+.elev-2 { background: var(--raised);  border: 1px solid var(--b1); box-shadow: 0 1px 2px rgba(0,0,0,0.10); }
+.elev-3 { background: var(--elevated); border: 1px solid var(--b2); box-shadow: var(--card-shadow); }
+
+/* ─── Focus ring (consistent across inputs/buttons) ─── */
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--amber-25);
+  border-color: var(--amber-40);
 }
+
+/* ─── Skeleton loader ────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--raised) 0%,
+    var(--elevated) 50%,
+    var(--raised) 100%
+  );
+  background-size: 400px 100%;
+  animation: shimmer-track 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+/* ─── Tighter scrollbar with hover state ─────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: var(--b2); border-radius: 4px;
+  border: 2px solid transparent; background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--t3); background-clip: padding-box;
+}
+
+/* ─── Tabular numbers for stats / timestamps ────── */
+.tabular-nums { font-variant-numeric: tabular-nums; }
 
 /* ─── Input glow on focus ────────────────────────── */
 .sovereign-input:focus-within {

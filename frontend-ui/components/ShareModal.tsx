@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { X, Globe, Lock, Users, Plus, Trash2, UserPlus, Shield, FileText, MessageSquare, Upload, Search, Clock } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { X, Globe, Lock, Users, Plus, Trash2, UserPlus, Shield, FileText, MessageSquare, Upload, Search, Clock, AtSign } from "lucide-react";
 
 interface ShareModalProps {
   project: string;
@@ -23,6 +23,23 @@ const EXPIRY_OPTIONS: { label: string; hours: number | null }[] = [
   { label: "7 days",     hours: 168 },
   { label: "30 days",    hours: 720 },
 ];
+
+function highlightMatch(text: string, query: string): React.ReactNode {
+  if (!query) return text;
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  const idx = lower.indexOf(q);
+  if (idx === -1) return text;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span style={{ color: "var(--amber)", fontWeight: 600 }}>
+        {text.slice(idx, idx + query.length)}
+      </span>
+      {text.slice(idx + query.length)}
+    </>
+  );
+}
 
 function expiryLabel(valid_until?: string | null): { text: string; expired: boolean } | null {
   if (!valid_until) return null;
@@ -103,6 +120,57 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
   const [activeTab, setActiveTab] = useState<"visibility" | "users" | "groups">("visibility");
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [editingPerms, setEditingPerms] = useState<Record<string, string[]>>({});
+
+  // ── Username autocomplete (3+ chars) ──
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [highlightedIdx, setHighlightedIdx] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const userInputRef = useRef<HTMLInputElement>(null);
+  const userBoxRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced fetch when newUser >= 3 chars
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = newUser.trim();
+    if (q.length < 3) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/users/search?q=${encodeURIComponent(q)}`);
+        if (!res.ok) { setSuggestions([]); return; }
+        const data = await res.json();
+        const list: string[] = data.usernames ?? [];
+        // Hide existing shares so we don't suggest re-adding the same user
+        const existing = new Set(sharedWith.map((s) => s.username.toLowerCase()));
+        const filtered = list.filter((u) => !existing.has(u.toLowerCase()));
+        setSuggestions(filtered);
+        setShowSuggestions(true);
+        setHighlightedIdx(0);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 180);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [newUser, sharedWith]);
+
+  // Click-outside to dismiss suggestions
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (userBoxRef.current && !userBoxRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    }
+    if (showSuggestions) document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showSuggestions]);
 
   useEffect(() => {
     fetchShares();
@@ -311,14 +379,121 @@ export default function ShareModal({ project, owner, currentVisibility, onClose,
               {/* Add user form */}
               <div style={{ background: "var(--raised)", border: "1px solid var(--b2)", borderRadius: "10px", padding: "14px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--t3)", marginBottom: "10px", letterSpacing: "0.05em", textTransform: "uppercase" }}>Add user</div>
-                <div style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
-                  <input
-                    value={newUser}
-                    onChange={(e) => setNewUser(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && addUser()}
-                    placeholder="Username"
-                    style={{ flex: 1, padding: "8px 12px", background: "var(--surface)", border: "1px solid var(--b2)", borderRadius: "7px", color: "var(--t1)", fontSize: "13px", outline: "none" }}
-                  />
+                <div ref={userBoxRef} style={{ display: "flex", gap: "8px", marginBottom: "10px", position: "relative" }}>
+                  <div style={{ position: "relative", flex: 1 }}>
+                    <AtSign size={12} style={{
+                      position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)",
+                      color: "var(--t3)", pointerEvents: "none",
+                    }} />
+                    <input
+                      ref={userInputRef}
+                      value={newUser}
+                      onChange={(e) => setNewUser(e.target.value)}
+                      onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                      onKeyDown={(e) => {
+                        if (showSuggestions && suggestions.length > 0) {
+                          if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            setHighlightedIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                            return;
+                          }
+                          if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            setHighlightedIdx((i) => Math.max(i - 1, 0));
+                            return;
+                          }
+                          if (e.key === "Tab" || (e.key === "Enter" && suggestions[highlightedIdx])) {
+                            e.preventDefault();
+                            setNewUser(suggestions[highlightedIdx]);
+                            setShowSuggestions(false);
+                            return;
+                          }
+                          if (e.key === "Escape") {
+                            setShowSuggestions(false);
+                            return;
+                          }
+                        }
+                        if (e.key === "Enter") addUser();
+                      }}
+                      placeholder="Type 3+ characters to search…"
+                      autoComplete="off"
+                      spellCheck={false}
+                      style={{
+                        width: "100%", padding: "8px 12px 8px 28px",
+                        background: "var(--surface)", border: "1px solid var(--b2)",
+                        borderRadius: "7px", color: "var(--t1)", fontSize: "13px", outline: "none",
+                      }}
+                    />
+                    {searching && (
+                      <span style={{
+                        position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)",
+                        fontSize: "10px", color: "var(--t3)",
+                      }}>
+                        searching…
+                      </span>
+                    )}
+                    {showSuggestions && (suggestions.length > 0 || (newUser.trim().length >= 3 && !searching)) && (
+                      <div style={{
+                        position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+                        background: "var(--raised)",
+                        border: "1px solid var(--b2)", borderRadius: "8px",
+                        boxShadow: "0 12px 32px rgba(0,0,0,0.35)",
+                        maxHeight: "200px", overflowY: "auto",
+                        padding: "4px", zIndex: 200,
+                        animation: "fadeUp 0.12s ease",
+                      }}>
+                        {suggestions.length === 0 ? (
+                          <div style={{ padding: "10px 12px", fontSize: "12px", color: "var(--t3)", textAlign: "center" }}>
+                            No users match &ldquo;{newUser.trim()}&rdquo;
+                          </div>
+                        ) : (
+                          suggestions.map((u, i) => (
+                            <div
+                              key={u}
+                              onMouseEnter={() => setHighlightedIdx(i)}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setNewUser(u);
+                                setShowSuggestions(false);
+                                userInputRef.current?.focus();
+                              }}
+                              style={{
+                                display: "flex", alignItems: "center", gap: "8px",
+                                padding: "7px 10px", borderRadius: "6px", cursor: "pointer",
+                                background: highlightedIdx === i ? "var(--amber-10)" : "transparent",
+                                border: highlightedIdx === i ? "1px solid var(--amber-25)" : "1px solid transparent",
+                                marginBottom: "1px",
+                              }}
+                            >
+                              <div style={{
+                                width: "22px", height: "22px", borderRadius: "5px", flexShrink: 0,
+                                background: "rgba(34,211,238,0.10)",
+                                border: "1px solid rgba(34,211,238,0.20)",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                              }}>
+                                <span className="font-mono" style={{
+                                  fontSize: "8px", color: "var(--cyan)", fontWeight: 700,
+                                }}>
+                                  {u.slice(0, 2).toUpperCase()}
+                                </span>
+                              </div>
+                              <span style={{ flex: 1, fontSize: "12.5px", color: "var(--t1)" }}>
+                                {highlightMatch(u, newUser.trim())}
+                              </span>
+                              {highlightedIdx === i && (
+                                <kbd style={{
+                                  padding: "1px 5px", fontSize: "9px",
+                                  fontFamily: '"JetBrains Mono", monospace',
+                                  background: "var(--surface)", border: "1px solid var(--b2)",
+                                  borderRadius: "3px", color: "var(--t3)",
+                                }}>↵</kbd>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <button
                     onClick={addUser}
                     style={{

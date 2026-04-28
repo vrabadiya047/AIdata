@@ -18,7 +18,7 @@ interface AttachedFile {
 
 interface Source {
   file: string;
-  page?: number | null;
+  pages: number[];
   score: number;
   excerpt?: string;
 }
@@ -147,7 +147,12 @@ function CitationChip({ source, index, open, onToggle }: {
   source: Source; index: number; open: boolean; onToggle: () => void;
 }) {
   const [hov, setHov] = useState(false);
-  const label = source.page != null ? `p.${source.page}` : null;
+  const pages = source.pages ?? [];
+  const label = pages.length === 1
+    ? `p.${pages[0]}`
+    : pages.length > 1
+      ? `p.${pages.slice(0, 2).join(", ")}${pages.length > 2 ? ` +${pages.length - 2}` : ""}`
+      : null;
   return (
     <button
       onClick={onToggle}
@@ -232,11 +237,13 @@ function SourcesRow({ sources, analyzing }: { sources: Source[]; analyzing?: boo
           <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
             <FileText size={10} style={{ color: "var(--amber)" }} />
             <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--t1)" }}>{active.file}</span>
-            {active.page != null && (
+            {active.pages && active.pages.length > 0 && (
               <span className="font-mono" style={{
                 fontSize: "9px", color: "var(--amber)", background: "rgba(245,158,11,0.08)",
                 padding: "1px 5px", borderRadius: "3px", border: "1px solid var(--amber-25)",
-              }}>page {active.page}</span>
+              }}>
+                {active.pages.length === 1 ? `p. ${active.pages[0]}` : `pp. ${active.pages.join(", ")}`}
+              </span>
             )}
           </div>
           <p style={{
@@ -264,9 +271,10 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
-function AIMessage({ content, thinking, streaming, sources, indexingFile, thoughts }: {
+function AIMessage({ content, thinking, streaming, sources, indexingFile, thoughts, ragStatus }: {
   content: string; thinking?: boolean; streaming?: boolean; sources?: Source[];
   indexingFile?: string | null; thoughts?: string[];
+  ragStatus?: { type: string; message: string } | null;
 }) {
   return (
     <div className="fade-up" style={{ display: "flex", gap: "14px", alignItems: "flex-start", paddingRight: "12%" }}>
@@ -289,6 +297,27 @@ function AIMessage({ content, thinking, streaming, sources, indexingFile, though
 
         {thinking && !content ? (
           <>
+            {/* Self-RAG status badge — grading / retry feedback */}
+            {ragStatus ? (
+              <div style={{
+                display: "flex", alignItems: "center", gap: "7px",
+                marginBottom: "10px",
+              }}>
+                <span style={{
+                  width: "5px", height: "5px", borderRadius: "50%",
+                  background: ragStatus.type === "retry" ? "var(--amber)" : "var(--t3)",
+                  flexShrink: 0,
+                  animation: "thinking-pulse 1.2s ease-in-out infinite",
+                }} />
+                <span className="font-mono" style={{
+                  fontSize: "10px", letterSpacing: "0.07em",
+                  color: ragStatus.type === "retry" ? "var(--amber)" : "var(--t3)",
+                  opacity: ragStatus.type === "retry" ? 0.9 : 0.65,
+                }}>
+                  {ragStatus.message}
+                </span>
+              </div>
+            ) : null}
             {indexingFile && (
               <div className="font-mono" style={{
                 fontSize: "10px", color: "var(--amber)", opacity: 0.75,
@@ -297,7 +326,7 @@ function AIMessage({ content, thinking, streaming, sources, indexingFile, though
                 Indexing {indexingFile}…
               </div>
             )}
-            <ThinkingDots />
+            {!ragStatus && <ThinkingDots />}
             <div style={{
               height: "2px", width: "52px", marginTop: "10px", borderRadius: "2px",
               background: "linear-gradient(90deg, var(--amber-25) 0%, transparent 100%)",
@@ -524,6 +553,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
   const [currentThread, setCurrentThread] = useState(activeThread);
   const [agentMode, setAgentMode] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
+  const [ragStatus, setRagStatus] = useState<{ type: string; message: string } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -732,6 +762,8 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                   next[next.length - 1] = { ...last, thoughts: [...(last.thoughts ?? []), parsed.thought] };
                   return next;
                 });
+              } else if (parsed.status) {
+                setRagStatus(parsed.status);
               } else if (parsed.sources) {
                 setMessages(prev => {
                   const next = [...prev];
@@ -739,6 +771,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                   return next;
                 });
               } else if (parsed.token !== undefined) {
+                setRagStatus(null);
                 accumulated += parsed.token;
                 setMessages(prev => {
                   const next = [...prev];
@@ -779,6 +812,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
       streamingRef.current = false;
       userStoppedRef.current = false;
       setIndexingFile(null);
+      setRagStatus(null);
       setIsLoading(false);
     }
   };
@@ -891,6 +925,7 @@ export default function ChatInterface({ activeProject, activeThread, username, o
                   sources={msg.sources}
                   thoughts={msg.thoughts}
                   indexingFile={isLoading && i === messages.length - 1 ? indexingFile : null}
+                  ragStatus={isLoading && i === messages.length - 1 ? ragStatus : null}
                 />
               )
             )}

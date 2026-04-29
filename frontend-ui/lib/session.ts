@@ -18,6 +18,7 @@ const EXPIRE_HOURS = 8;
 export interface SessionPayload {
   username: string;
   role: string;
+  session_id?: string;
 }
 
 export async function encrypt(payload: SessionPayload): Promise<string> {

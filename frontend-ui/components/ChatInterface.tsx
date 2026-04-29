@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Square, Paperclip, X, FileText, Upload, Shield, ChevronRight, Layers, Zap, GitCompare, ChevronDown, ChevronUp, Mic, MicOff } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, Upload, Shield, ChevronRight, Layers, Zap, GitCompare, ChevronDown, ChevronUp, Mic, MicOff, BookOpen } from "lucide-react";
 import DiffModal from "./DiffModal";
 import { getThreadHistory } from "@/app/actions";
 import ReactMarkdown from "react-markdown";

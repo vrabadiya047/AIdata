@@ -11,7 +11,8 @@ import TopBar from '@/components/TopBar';
 import ShortcutsOverlay from '@/components/ShortcutsOverlay';
 import ReindexModal from '@/components/ReindexModal';
 import QueryLogPanel from '@/components/QueryLogPanel';
-import SecurityPanel from '@/components/SecurityPanel';
+import ProfilePanel from '@/components/ProfilePanel';
+import WorkspacePanel from '@/components/WorkspacePanel';
 import { useSession } from '@/contexts/SessionContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -35,6 +36,7 @@ export default function Home() {
   const [showReindex, setShowReindex] = useState(false);
   const [showQueryLog, setShowQueryLog] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
+  const [showWorkspace, setShowWorkspace] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [wsRefreshKey, setWsRefreshKey] = useState(0);
   const [viewMode, setViewMode] = useState<'chat' | 'graph'>('chat');
@@ -277,6 +279,8 @@ export default function Home() {
           onOpenDocs={() => setShowDocs(true)}
           onOpenShortcuts={() => setShowShortcuts(true)}
           onReindex={() => setShowReindex(true)}
+          onOpenProfile={() => setShowSecurity(true)}
+          onOpenWorkspace={() => setShowWorkspace(true)}
         />
 
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -324,7 +328,18 @@ export default function Home() {
 
       {showReindex && <ReindexModal onClose={() => setShowReindex(false)} isAdmin={session?.role === 'Admin'} />}
       {showQueryLog && <QueryLogPanel onClose={() => setShowQueryLog(false)} />}
-      {showSecurity && <SecurityPanel onClose={() => setShowSecurity(false)} />}
+      {showSecurity && <ProfilePanel onClose={() => setShowSecurity(false)} />}
+      {showWorkspace && (
+        <WorkspacePanel
+          onClose={() => setShowWorkspace(false)}
+          onRestored={(project, thread) => {
+            setActiveProject(project);
+            setActiveThread(thread);
+            setViewMode('chat');
+            setShowWorkspace(false);
+          }}
+        />
+      )}
     </div>
   );
 }

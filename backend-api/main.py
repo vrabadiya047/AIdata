@@ -133,9 +133,12 @@ def safe_filename(filename: str) -> str:
 
 # ─── Auth helpers ────────────────────────────────────────────────────────────
 
-def create_token(username: str, role: str) -> str:
+def create_token(username: str, role: str, session_id: str | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
-    return jwt.encode({"sub": username, "role": role, "exp": expire}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    payload: dict = {"sub": username, "role": role, "exp": expire}
+    if session_id:
+        payload["session_id"] = session_id
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def create_pending_mfa_token(username: str) -> str:
     """Short-lived token issued after correct password but before TOTP is verified.
@@ -156,7 +159,12 @@ def get_current_user(request: Request) -> dict:
         username = payload.get("username") or payload.get("sub")
         if not username:
             raise HTTPException(status_code=401, detail="Invalid session")
-        return {"username": username, "role": payload.get("role", "User")}
+        session_id = payload.get("session_id")
+        if session_id:
+            from src.auth import is_session_revoked as _check_revoked
+            if _check_revoked(session_id):
+                raise HTTPException(status_code=401, detail="Session revoked")
+        return {"username": username, "role": payload.get("role", "User"), "session_id": session_id}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid session")
 
@@ -178,6 +186,8 @@ async def health():
 class LoginRequest(BaseModel):
     username: str
     password: str
+    user_agent: str = ""
+    ip_address: str = ""
 
 @app.post("/api/auth/login")
 async def login(data: LoginRequest):
@@ -189,10 +199,15 @@ async def login(data: LoginRequest):
         pending = create_pending_mfa_token(data.username)
         return JSONResponse({"mfa_required": True, "mfa_token": pending})
 
-    token = create_token(data.username, role)
+    session_id = str(uuid.uuid4())
+    if data.user_agent or data.ip_address:
+        await adb.create_session_record(session_id, data.username, data.user_agent, data.ip_address)
+
+    token = create_token(data.username, role, session_id)
     response = JSONResponse({
         "username": data.username, "role": role,
         "requires_change": requires_change, "mfa_required": False,
+        "session_id": session_id,
     })
     response.set_cookie(
         key="sovereign_session", value=token,
@@ -290,6 +305,52 @@ async def admin_mfa_reset(username: str, admin: dict = Depends(require_admin)):
     """Admin: reset MFA for any user (e.g. lost authenticator)."""
     await adb.mfa_disable(username)
     return {"status": "mfa_reset"}
+
+
+# ─── Profile ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/auth/profile")
+async def get_profile(user: dict = Depends(get_current_user)):
+    profile = await adb.get_user_profile(user["username"])
+    info = await adb.get_user_info(user["username"])
+    return {
+        **profile,
+        "username": user["username"],
+        "role": user["role"],
+        "mfa_enabled": info["mfa_enabled"] if info else False,
+    }
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str = ""
+    job_title: str = ""
+    department: str = ""
+    avatar_b64: str = ""
+
+@app.put("/api/auth/profile")
+async def update_profile(data: ProfileUpdateRequest, user: dict = Depends(get_current_user)):
+    await adb.update_user_profile(
+        user["username"], data.display_name, data.job_title,
+        data.department, data.avatar_b64,
+    )
+    return {"status": "updated"}
+
+
+# ─── Sessions ────────────────────────────────────────────────────────────────
+
+@app.get("/api/auth/sessions")
+async def list_user_sessions(user: dict = Depends(get_current_user)):
+    sessions = await adb.list_sessions(user["username"])
+    return {"sessions": sessions, "current_session_id": user.get("session_id")}
+
+@app.delete("/api/auth/sessions/{session_id}")
+async def revoke_user_session(session_id: str, user: dict = Depends(get_current_user)):
+    await adb.revoke_session(session_id, user["username"])
+    return {"status": "revoked"}
+
+@app.delete("/api/auth/sessions")
+async def revoke_other_sessions(user: dict = Depends(get_current_user)):
+    await adb.revoke_all_sessions_except(user["username"], user.get("session_id"))
+    return {"status": "revoked"}
 
 
 # ─── Workspaces ───────────────────────────────────────────────────────────────
@@ -588,6 +649,18 @@ async def delete_snapshot_endpoint(snap_id: str, user: dict = Depends(get_curren
     await adb.delete_snapshot(snap_id, user["username"])
     return {"status": "deleted"}
 
+@app.post("/api/snapshots/{snap_id}/restore")
+async def restore_snapshot_endpoint(snap_id: str, user: dict = Depends(get_current_user)):
+    snap = await adb.restore_snapshot(snap_id, user["username"])
+    if snap is None:
+        raise HTTPException(status_code=404, detail="Snapshot not found or access denied")
+    return {"status": "restored", "project": snap["project_name"], "thread_id": snap["thread_id"]}
+
+@app.get("/api/user/shares")
+async def list_own_shares(user: dict = Depends(get_current_user)):
+    shares = await adb.get_all_shares_by_owner(user["username"])
+    return {"shares": shares}
+
 
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
@@ -632,6 +705,118 @@ async def admin_audit(admin: dict = Depends(require_admin)):
 @app.get("/api/admin/privacy")
 async def admin_privacy(admin: dict = Depends(require_admin)):
     return await adb.get_redaction_stats()
+
+
+@app.get("/api/admin/system")
+async def admin_system(admin: dict = Depends(require_admin)):
+    import psutil, socket, asyncio
+
+    cpu_percent = psutil.cpu_percent(interval=0.15)
+
+    mem = psutil.virtual_memory()
+    ram = {
+        "used_gb":  round(mem.used  / 1024 ** 3, 2),
+        "total_gb": round(mem.total / 1024 ** 3, 2),
+        "percent":  round(mem.percent, 1),
+    }
+
+    vram: dict = {"available": False, "used_gb": 0.0, "total_gb": 0.0, "percent": 0, "name": ""}
+    try:
+        import torch
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            used  = torch.cuda.memory_allocated(0)
+            total = props.total_memory
+            vram = {
+                "available": True,
+                "name":      props.name,
+                "used_gb":   round(used  / 1024 ** 3, 2),
+                "total_gb":  round(total / 1024 ** 3, 2),
+                "percent":   round((used / total) * 100, 1) if total else 0,
+            }
+    except Exception:
+        pass
+
+    air_gap = True
+    try:
+        loop = asyncio.get_event_loop()
+        def _check():
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.8)
+            try:
+                s.connect(("8.8.8.8", 53))
+                return False
+            except Exception:
+                return True
+            finally:
+                s.close()
+        air_gap = await loop.run_in_executor(None, _check)
+    except Exception:
+        air_gap = True
+
+    pii_month = 0
+    try:
+        stats = await adb.get_redaction_stats()
+        pii_month = stats.get("summary", {}).get("total_redactions", 0)
+    except Exception:
+        pass
+
+    return {
+        "cpu_percent": round(cpu_percent, 1),
+        "ram": ram,
+        "vram": vram,
+        "air_gap": air_gap,
+        "pii_this_month": pii_month,
+    }
+
+
+# ─── Intelligence settings ────────────────────────────────────────────────────
+
+_INTELLIGENCE_DEFAULTS = {
+    "llm_model":          "llama3.2:3b",
+    "critic_model":       "llama3.2:1b",
+    "similarity_top_k":   "10",
+    "reranker_top_n":     "3",
+    "self_rag_retries":   "2",
+    "semantic_threshold": "95",
+    "ocr_enabled":        "true",
+    "ocr_min_chars":      "50",
+}
+
+_ALLOWED_INTELLIGENCE_KEYS = set(_INTELLIGENCE_DEFAULTS.keys())
+
+
+def _fetch_ollama_models() -> list[str]:
+    import urllib.request, json as _json
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
+            data = _json.loads(r.read())
+            return sorted(m["name"] for m in data.get("models", []))
+    except Exception:
+        return []
+
+
+@app.get("/api/admin/intelligence")
+async def get_intelligence(admin: dict = Depends(require_admin)):
+    stored   = await adb.get_platform_settings()
+    settings = {**_INTELLIGENCE_DEFAULTS, **stored}
+
+    loop   = asyncio.get_event_loop()
+    models = await loop.run_in_executor(None, _fetch_ollama_models)
+
+    return {"settings": settings, "available_models": models}
+
+
+class IntelligencePayload(BaseModel):
+    settings: dict
+
+
+@app.put("/api/admin/intelligence")
+async def put_intelligence(body: IntelligencePayload, admin: dict = Depends(require_admin)):
+    for key, value in body.settings.items():
+        if key in _ALLOWED_INTELLIGENCE_KEYS:
+            await adb.set_platform_setting(key, str(value))
+    return {"ok": True}
 
 
 # ─── Core RAG query ───────────────────────────────────────────────────────────

@@ -123,6 +123,12 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )''')
 
+        cur.execute('''CREATE TABLE IF NOT EXISTS platform_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )''')
+
         # Safe idempotent column migrations
         for sql in [
             "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS thread_id TEXT DEFAULT 'General'",
@@ -560,6 +566,57 @@ def delete_snapshot(snap_id, username):
         )
 
 
+def restore_snapshot(snap_id: str, username: str) -> dict | None:
+    """Replace a thread's chat history with the messages saved in the snapshot.
+
+    Only the user who created the snapshot may restore it.
+    Returns the snapshot dict on success, None if not found / permission denied.
+    """
+    snap = get_snapshot(snap_id)
+    if not snap or snap["created_by"] != username:
+        return None
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'DELETE FROM chat_history '
+            'WHERE project_tag=%s AND owner=%s AND thread_id=%s',
+            (snap["project_name"], snap["project_owner"], snap["thread_id"]),
+        )
+        for msg in snap["messages"]:
+            cur.execute(
+                'INSERT INTO chat_history (project_tag, owner, thread_id, role, content) '
+                'VALUES (%s, %s, %s, %s, %s)',
+                (snap["project_name"], snap["project_owner"], snap["thread_id"],
+                 msg["role"], msg["content"]),
+            )
+    return snap
+
+
+def get_all_shares_by_owner(username: str) -> list:
+    """Return every row in project_shares where this user is the project owner."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT project_name, shared_with, permissions, valid_until '
+            'FROM project_shares WHERE project_owner = %s '
+            'ORDER BY project_name, shared_with',
+            (username,),
+        )
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        results = []
+        for r in cur.fetchall():
+            vu = r[3]
+            results.append({
+                "project":     r[0],
+                "shared_with": r[1],
+                "permissions": [p.strip() for p in (r[2] or "documents,chats").split(",") if p.strip()],
+                "valid_until": vu.isoformat() if vu else None,
+                "expired":     vu is not None and vu.replace(tzinfo=timezone.utc) < now,
+            })
+        return results
+
+
 # ─── Indexing Jobs ───────────────────────────────────────────────────────────
 
 def enqueue_job(job_id: str, file_path: str, username: str, project: str):
@@ -739,3 +796,23 @@ def nuke_database():
         cur.execute('DELETE FROM indexing_jobs')
         cur.execute('DELETE FROM redaction_events')
         cur.execute("UPDATE system_state SET value = '0' WHERE key = 'last_index_update'")
+
+
+# ─── Platform settings (intelligence tab) ────────────────────────────────────
+
+def get_platform_settings() -> dict:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT key, value FROM platform_settings')
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def set_platform_setting(key: str, value: str) -> None:
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'INSERT INTO platform_settings (key, value, updated_at) VALUES (%s, %s, NOW()) '
+            'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()',
+            (key, value),
+        )
+        conn.commit()

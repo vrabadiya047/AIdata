@@ -10,6 +10,7 @@ import { useCommand } from '@/contexts/CommandContext';
 import { useToast } from '@/contexts/ToastContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSession } from '@/contexts/SessionContext';
+import AvatarBubble from '@/components/AvatarBubble';
 
 interface TopBarProps {
   activeProject: string;
@@ -19,12 +20,14 @@ interface TopBarProps {
   onOpenDocs: () => void;
   onOpenShortcuts: () => void;
   onReindex?: () => void;
+  onOpenProfile?: () => void;
+  onOpenWorkspace?: () => void;
   pendingNotifications?: number;
 }
 
 export default function TopBar({
   activeProject, activeThread, viewMode, onViewModeChange,
-  onOpenDocs, onOpenShortcuts, onReindex, pendingNotifications = 0,
+  onOpenDocs, onOpenShortcuts, onReindex, onOpenProfile, onOpenWorkspace, pendingNotifications = 0,
 }: TopBarProps) {
   const router = useRouter();
   const { open: openCmd } = useCommand();
@@ -34,6 +37,15 @@ export default function TopBar({
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [isMac, setIsMac] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const [avatarData, setAvatarData] = useState<{ display_name: string; avatar_b64: string } | null>(null);
+
+  useEffect(() => {
+    if (!session?.username) return;
+    fetch('/api/auth/profile')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setAvatarData({ display_name: d.display_name ?? '', avatar_b64: d.avatar_b64 ?? '' }); })
+      .catch(() => {});
+  }, [session?.username]);
 
   useEffect(() => {
     setIsMac(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'));
@@ -241,15 +253,12 @@ export default function TopBar({
             cursor: 'pointer', transition: 'all 0.12s ease',
           }}
         >
-          <div style={{
-            width: '24px', height: '24px', borderRadius: '50%',
-            background: 'linear-gradient(135deg, var(--amber) 0%, var(--amber-dark) 100%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontSize: '11px', fontWeight: 700,
-            fontFamily: 'var(--font-display, "Syne", sans-serif)',
-          }}>
-            {(session?.username ?? 'U').charAt(0).toUpperCase()}
-          </div>
+          <AvatarBubble
+            username={session?.username ?? '?'}
+            displayName={avatarData?.display_name ?? ''}
+            avatarB64={avatarData?.avatar_b64 ?? ''}
+            size={24}
+          />
           <span style={{ fontSize: '12px', color: 'var(--t1)', fontWeight: 500 }}>
             {session?.username ?? 'Guest'}
           </span>
@@ -266,32 +275,38 @@ export default function TopBar({
             animation: 'fadeUp 0.14s cubic-bezier(0.16,1,0.3,1)',
           }}>
             <div style={{
-              padding: '10px 12px 8px', borderBottom: '1px solid var(--b1)',
-              marginBottom: '4px',
+              padding: '12px 12px 10px', borderBottom: '1px solid var(--b1)',
+              marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '10px',
             }}>
-              <div style={{ fontSize: '13px', color: 'var(--t1)', fontWeight: 600 }}>
-                {session?.username ?? 'Guest'}
-              </div>
-              <div style={{
-                fontSize: '11px', color: 'var(--t3)', marginTop: '2px',
-                display: 'flex', alignItems: 'center', gap: '5px',
-              }}>
-                <span style={{
-                  padding: '1px 6px', borderRadius: '4px',
-                  background: 'var(--amber-10)', color: 'var(--amber)',
-                  fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.05em',
-                  textTransform: 'uppercase',
-                }}>
-                  {session?.role ?? 'user'}
-                </span>
+              <AvatarBubble
+                username={session?.username ?? '?'}
+                displayName={avatarData?.display_name ?? ''}
+                avatarB64={avatarData?.avatar_b64 ?? ''}
+                size={36}
+              />
+              <div>
+                <div style={{ fontSize: '13px', color: 'var(--t1)', fontWeight: 600 }}>
+                  {avatarData?.display_name || session?.username || 'Guest'}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginTop: '3px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--t3)' }}>@{session?.username}</span>
+                  <span style={{
+                    padding: '1px 6px', borderRadius: '4px',
+                    background: 'var(--amber-10)', color: 'var(--amber)',
+                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                  }}>
+                    {session?.role ?? 'user'}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <MenuItem icon={<User size={13} />} onClick={() => { setUserMenuOpen(false); router.push('/admin'); }}>
-              Profile
+            <MenuItem icon={<User size={13} />} onClick={() => { setUserMenuOpen(false); onOpenProfile?.(); }}>
+              Profile &amp; Security
             </MenuItem>
-            <MenuItem icon={<Settings size={13} />} onClick={() => { setUserMenuOpen(false); router.push('/admin'); }}>
-              Settings
+            <MenuItem icon={<Settings size={13} />} onClick={() => { setUserMenuOpen(false); onOpenWorkspace?.(); }}>
+              Workspace Governance
             </MenuItem>
             <MenuItem icon={<Activity size={13} />} onClick={() => { setUserMenuOpen(false); toast.info('System health', 'All services nominal'); }}>
               System health

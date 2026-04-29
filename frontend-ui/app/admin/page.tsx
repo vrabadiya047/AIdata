@@ -12,7 +12,7 @@ import {
   Copy, Check, RotateCw, KeyRound, X as XIcon, DatabaseZap,
   Cpu, MemoryStick, Server, Wifi, WifiOff, Brain, Database,
   ChevronRight, Lock, SlidersHorizontal, Zap, AlertTriangle,
-  Sun, Moon, Bell, Keyboard, LogOut, Settings, User,
+  Sun, Moon, Bell, Keyboard, LogOut, Settings,
 } from 'lucide-react';
 import ReindexModal from '@/components/ReindexModal';
 import AvatarBubble from '@/components/AvatarBubble';
@@ -1434,11 +1434,11 @@ function ModelSelect({ label, description, value, models, onChange }: {
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full text-sm rounded-lg px-3 py-2 outline-none"
         style={{
-          background: 'var(--raised)',
-          border: '1px solid var(--b2)',
-          color: 'var(--t1)', cursor: 'pointer',
+          width: '100%', background: 'var(--raised)',
+          border: '1px solid var(--b2)', borderRadius: '8px',
+          padding: '8px 12px', fontSize: '14px',
+          color: 'var(--t1)', cursor: 'pointer', outline: 'none',
         }}
       >
         {allOptions.length === 0 && (
